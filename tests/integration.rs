@@ -8,7 +8,10 @@ use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use dlna_rs::config::{MediaConfig, MediaDirectory, MediaKind};
+use dlna_rs::config::{
+    LibraryConfig, MediaConfig, MediaDirectory, MediaKind, RecentlyAddedConfig, View,
+};
+use dlna_rs::content::composite::CompositeContentSource;
 use dlna_rs::content::folder::FolderMirror;
 use dlna_rs::core::http::HttpServer;
 use dlna_rs::index::{IndexBuilder, ObjectId, SharedIndex};
@@ -457,6 +460,86 @@ async fn browse_didl(base: &str, object_id: &str) -> String {
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&amp;", "&")
+}
+
+/// Scans a real directory of tracks and serves it through
+/// `CompositeContentSource`, built from `library` the same way `main.rs`
+/// builds it. Used for the music-library-view tests below, which need
+/// the real Albums/Artists grouping, not the hand-built single-album
+/// fixture the earlier tests in this file use.
+async fn start_server_with_library(
+    dir: &TempDir,
+    library: LibraryConfig,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let media = MediaConfig {
+        directories: vec![MediaDirectory {
+            path: dir.path().to_path_buf(),
+            kind: MediaKind::Audio,
+        }],
+        follow_symlinks: false,
+        exclude_patterns: vec![],
+    };
+    let shared_index = SharedIndex::new(dlna_rs::scanner::scan(&media));
+    let content_source = CompositeContentSource::from_config(&library, shared_index);
+
+    let server = HttpServer::bind(
+        Ipv4Addr::LOCALHOST,
+        0,
+        "library-test".to_string(),
+        Uuid::parse_str("33333333-4444-5555-6666-777777777777").unwrap(),
+        content_source,
+        PassthroughSource,
+        vec![dir.path().to_path_buf()],
+    )
+    .await
+    .expect("failed to bind test HTTP server");
+    let addr = server.local_addr().unwrap();
+    let handle = tokio::spawn(server.serve());
+    (format!("http://{addr}"), handle)
+}
+
+#[tokio::test]
+async fn root_browse_shows_exactly_the_configured_views() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Track.mp3"), TRACK_CONTENT).unwrap();
+
+    let library = LibraryConfig {
+        views: vec![View::Folders, View::Albums],
+        recently_added: RecentlyAddedConfig::default(),
+    };
+    let (base, _handle) = start_server_with_library(&dir, library).await;
+
+    let root_didl = browse_didl(&base, "0").await;
+    assert!(root_didl.contains(">Folders<"));
+    assert!(root_didl.contains(">Albums<"));
+    assert!(!root_didl.contains(">Artists<"));
+}
+
+#[tokio::test]
+async fn recently_added_songs_over_http_is_capped_at_the_configured_count() {
+    let dir = tempfile::tempdir().unwrap();
+    // More tracks than the configured count below - this is the exit
+    // criterion from docs/PLAN.md Phase 8: more than the configured
+    // count must not break the view.
+    for n in 0..5 {
+        std::fs::write(dir.path().join(format!("Track {n}.mp3")), TRACK_CONTENT).unwrap();
+    }
+
+    let library = LibraryConfig {
+        views: vec![View::RecentlyAddedSongs],
+        recently_added: RecentlyAddedConfig {
+            songs_count: 3,
+            albums_count: 20,
+            max_age_days: 0,
+        },
+    };
+    let (base, _handle) = start_server_with_library(&dir, library).await;
+
+    let root_didl = browse_didl(&base, "0").await;
+    let recent_id = extract_attr(&root_didl, "container", "id");
+
+    let songs_didl = browse_didl(&base, &recent_id).await;
+    assert_eq!(songs_didl.matches("<item ").count(), 3);
 }
 
 #[tokio::test]

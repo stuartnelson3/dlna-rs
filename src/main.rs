@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use dlna_rs::config::Config;
-use dlna_rs::content::folder::FolderMirror;
+use dlna_rs::content::composite::CompositeContentSource;
 use dlna_rs::core::http::HttpServer;
 use dlna_rs::core::net;
 use dlna_rs::core::ssdp::Ssdp;
@@ -153,7 +153,7 @@ async fn main() -> ExitCode {
     // rescan task can keep replacing it after `content_source` has moved
     // into HttpServer.
     let shared_index = SharedIndex::new(IndexBuilder::new().build());
-    let content_source = FolderMirror::new(shared_index.clone());
+    let content_source = CompositeContentSource::from_config(&config.library, shared_index.clone());
 
     let media_roots = config
         .media

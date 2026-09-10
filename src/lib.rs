@@ -4,6 +4,7 @@ pub mod config;
 pub mod content;
 pub mod core;
 pub mod index;
+pub(crate) mod metadata;
 pub mod rescan;
 pub mod scanner;
 pub mod transform;

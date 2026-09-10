@@ -13,6 +13,7 @@ pub(crate) mod device;
 pub(crate) mod didl;
 pub(crate) mod dispatch;
 pub mod http;
+pub(crate) mod metadata_provider;
 pub mod net;
 pub(crate) mod soap;
 pub mod ssdp;

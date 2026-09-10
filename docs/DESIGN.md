@@ -199,8 +199,6 @@ filesystem-verification question, not a string-parsing one — see
 `docs/THREAT_MODEL.md` and `docs/PLAN.md` Phase 6 for the full reasoning
 and what got built instead.
 
-`MetadataProvider` still doesn't exist — Phase 8.
-
 Phase 7 makes the index a *live* thing instead of a value computed once at
 startup: `index::SharedIndex` (an `Arc<RwLock<Index>>` handle) and
 `rescan.rs` (a sleep-then-scan loop, each scan on a blocking thread pool
@@ -216,6 +214,40 @@ with an empty index and starts serving immediately, and the rescan task
 (spawned right after) does the real populate — SSDP/`description.xml`
 answer right away rather than waiting on a first scan that could be slow
 for a large library.
+
+Phase 8 adds the third extension-point trait, `MetadataProvider`
+(`core::metadata_provider`), narrower than the spec's own description of
+it. SPEC.md §10 lists title, artist, album, track, and genre as this
+trait's job. But §5.1 already defines how MVP groups albums and artists:
+by folder structure, read straight off `SharedIndex`. Giving both
+`MetadataProvider` and the folder heuristic a claim on artist and album
+would let them disagree on a real, messy library, so `MetadataProvider`
+now does only what §5.1 leaves undone — pull a track number and a clean
+title out of a filename (`metadata::filename::FilenameMetadata`). A
+future tag-reading provider can add real artist/album/genre fields; the
+`Metadata` struct already leaves room.
+
+`content::music_library::MusicLibraryView` is the grouping logic itself.
+It holds a `SharedIndex` clone, the same one `FolderMirror` reads, and
+walks `Container.parent_id` chains to find albums (a track's direct
+parent) and artists (that parent's own parent) — no separate index, no
+extra scan. `content::composite::CompositeContentSource` then mounts one
+`ContentSource` per configured view under its own ID prefix, joined with
+`$` (`"albums$42"`) rather than MiniDLNA's `/`, since the router already
+rejects `/` inside an object ID and a different separator needed no
+router change. An ID with no matching prefix, or a known prefix paired
+with an ID its mount doesn't recognize, returns `None` — the same
+fail-closed contract every `ContentSource` here keeps.
+
+A property test (an arbitrary real directory tree, scanned for real,
+browsed through Albums and Artists) caught three real bugs before this
+phase shipped: a top-level entry reporting its real folder parent
+instead of the view's own root, a folder that holds both a track and a
+sub-folder leaking that sub-folder into the track listing, and a folder
+that qualifies as both an album and an artist getting shown — and
+answered for — in both roles at once. `docs/PLAN.md`'s Phase 8 section
+has the full account of each bug and its fix; worth reading as a
+worked example of what this kind of property test is actually for.
 
 See [`PLAN.md`](PLAN.md) for what's next and why the phases are ordered the
 way they are.
@@ -255,6 +287,20 @@ Only `transform::passthrough::PassthroughSource` (a concrete type
 `core::http::router::parse_item_path` (needed by their fuzz targets, via
 `fuzz_support`) cross the boundary; `core::byte_source` itself stays
 `pub(crate)`.
+
+Phase 8 added four modules; the same grep check gave four different
+answers. `core::metadata_provider` (the trait) stays `pub(crate)` —
+nothing outside `core` names it directly, only the concrete
+`FilenameMetadata` type. `content::composite` is `pub` — `main.rs` and
+`tests/integration.rs` both construct `CompositeContentSource` directly,
+the same real-external-use test every other `pub` module here passes.
+`content::music_library` and the top-level `metadata` module are
+`pub(crate)`: unlike `FolderMirror` or `PassthroughSource`,
+`MusicLibraryView` and `FilenameMetadata` are never constructed outside
+`src/` — only `content::composite` (a sibling module, same crate) reaches
+them, so the grep check says `pub(crate)`, not `pub`, and that's what
+they are. Worth narrowing later if a real external caller shows up; not
+worth guessing at now.
 
 ## Config
 

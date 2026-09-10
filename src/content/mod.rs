@@ -3,4 +3,6 @@
 //! why); this module holds the concrete implementations that depend on
 //! it, per the spec's stated dependency direction.
 
+pub mod composite;
 pub mod folder;
+pub(crate) mod music_library;

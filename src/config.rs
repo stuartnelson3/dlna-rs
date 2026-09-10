@@ -11,9 +11,7 @@ pub struct Config {
     pub media: MediaConfig,
     #[serde(default)]
     pub ssdp: SsdpConfig,
-    // Read by the music library views (Phase 8).
     #[serde(default)]
-    #[allow(dead_code)]
     pub library: LibraryConfig,
     #[serde(default)]
     pub rescan: RescanConfig,

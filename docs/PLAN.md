@@ -435,22 +435,112 @@ with the new file present, server never restarted.
 **Goal:** Albums, Artists, and Recently Added — the actual reason this
 project exists instead of just running MiniDLNA.
 
-- [ ] `trait MetadataProvider` + `FilenameMetadata` (folder-name-as-album,
-      parent-folder-as-artist, `"NN - Title"` prefix parsing).
-- [ ] `content::music_library::MusicLibraryView`: All Songs, Albums,
-      Artists, Recently Added Songs, Recently Added Albums.
-- [ ] `CompositeContentSource` mounting the views listed in
-      `library.views`, each under its own ID-namespace prefix.
-- [ ] Recently Added computed live from the index on each Browse call (or
-      cheaply invalidated on rescan) — never a stale cached container.
-- [ ] Config: `library.views`, `library.recently_added` (`songs_count`,
-      `albums_count`, `max_age_days`).
-- [ ] Property test: an arbitrary directory tree never produces a panic or
-      a broken container in the Albums/Artists grouping.
+- [x] `core::metadata_provider::MetadataProvider` + `metadata::filename::FilenameMetadata`.
+      **Narrowed from the spec's literal wording.** SPEC.md §10 lists
+      title, artist, album, track, and genre as this trait's job. But
+      §5.1, the section that actually defines the MVP feature, groups
+      albums and artists by folder structure, not by a parsed tag. Two
+      grouping mechanisms would disagree on real, messy libraries, so
+      this trait now does only what §5.1 leaves for it: pull a leading
+      track number and a clean title out of a filename. A later
+      tag-reading provider can add real artist/album/genre fields; the
+      `Metadata` struct already leaves room for them.
+- [x] `content::music_library::MusicLibraryView`: All Songs, Albums,
+      Artists, Recently Added Songs, Recently Added Albums. Albums and
+      Artists reuse the real folder tree `FolderMirror` already reads
+      from `SharedIndex` — an album is a track's direct parent
+      container, an artist is that container's own parent. No new data
+      structure, no separate grouping pass.
+- [x] `content::composite::CompositeContentSource` mounts the views
+      listed in `library.views`, each under its own ID prefix
+      (`"albums$42"`), joined with `$` — chosen over MiniDLNA's `/`
+      because the router already rejects `/` inside an object ID
+      (`core::http::router::parse_item_path`), so `$` needed no router
+      change. An unknown prefix, or a known prefix with an ID its mount
+      doesn't recognize, returns `None` — UPnP fault 701, same
+      fail-closed contract every `ContentSource` in this project keeps.
+- [x] Recently Added Songs and Recently Added Albums compute their list
+      fresh from the index on every Browse call. There's no cache to
+      invalidate, so a rescan can never leave a stale result behind.
+- [x] Config: `library.views`, `library.recently_added` (`songs_count`,
+      `albums_count`, `max_age_days`) — both already existed as parsed,
+      unused fields since Phase 1; this phase is what reads them.
+- [x] Property test: an arbitrary real directory tree, scanned for real,
+      browsed through Albums and Artists, checked for two things at
+      every step — no panic, and every returned entry's `parent_id`
+      matches the container it came from. This test caught three real
+      bugs, described below.
+
+**Bugs the property test found, and the fix for each:**
+
+1. **Wrong `parent_id` at the top level.** An album three folders deep
+   is still a *direct* child of the "Albums" view — but the code first
+   drafted just handed back the real index entry, real folder parent and
+   all. Fix: every top-level entry gets its `parent_id` overwritten to
+   this view's own root (`reparent_to_root`), and `entry()` matches that
+   override for the same ID.
+2. **A folder holding both a track and a sub-folder.** Say `Music/`
+   holds `track.mp3` directly, and also a `Bonus/` sub-folder with its
+   own track. `Music` is genuinely an album (it holds a track). But
+   naively drilling into it returned the real folder's children — the
+   track *and* the `Bonus` container — even though `Bonus` is a
+   separate album in its own right, not more of `Music`'s content. Fix:
+   drilling into an album now filters to tracks only
+   (`tracks_of_album`); drilling into an artist filters to sub-folders
+   that are themselves albums (`albums_under_artist`).
+3. **A folder that is both an album and an artist.** Nest deep enough
+   (`Artist/SelfTitled/track.mp3` next to
+   `Artist/SelfTitled/Bonus/track2.mp3`) and `SelfTitled` qualifies as
+   an album (it holds a track) *and* as an artist (`Bonus` is a
+   sub-album of it). Showing it in both roles at once gave `entry()` two
+   different correct answers for the same ID. Fix: a folder that
+   qualifies as both keeps only its artist role; its own direct track
+   drops out of this view. Same kind of trade-off as the orphan-track
+   exclusion below — documented in `albums_under_artist`'s doc comment,
+   not silently swallowed.
+
+Bug 1 also hid a `childCount` mismatch: an album's displayed count must
+match what browsing it actually returns (tracks only), not the real
+folder's raw child count. Fixed alongside bug 2.
+
+**Design decisions, from the planning conversation before this phase's
+code was written:**
+
+- Recently Added's age basis is a file's `Item.modified` time from the
+  index, not directory mtime — already scanned, so no extra filesystem
+  call.
+- A filename's leading `"NN - "` becomes a track number for in-album
+  sort order (`FilenameMetadata::parse_track_number`).
+- A track with no real containing-album folder — one sitting directly in
+  a configured media directory, whose only real parent is the
+  media-mount container itself — is left out of Artists (the album's
+  own parent there is the root, and an album with no artist above it has
+  no Artists entry). It still appears under Folders and Albums, so
+  nothing is hidden, only ungrouped.
+- No new `cargo-fuzz` target: `CompositeContentSource`'s prefix split
+  (`split_once('$')`) is a pure, total string operation on IDs that
+  already pass through the fuzzed `parse_item_path` → `ObjectId::new`
+  path. There's nothing new here for a fuzzer to reach.
+
+**Verified:** `cargo test --all-features` (149 lib tests, 16 integration
+tests, including the property test above); `cargo clippy --all-targets
+--all-features -- -D warnings` and `cargo fmt --check` both clean; and
+by hand against a real running instance — two artists, three albums (one
+with a mixed track-plus-loose-file folder), and a root-level track with
+no artist folder above it. Root browse showed exactly the five
+configured views. `Albums` showed the mixed folder with `childCount="1"`
+matching its one real track, not its raw folder count of two.
+`RecentlyAddedSongs`, configured with `songs_count = 5` against ten real
+tracks, returned exactly five. `Artists` correctly excluded the
+root-level track's album. Playing a track through its composite-prefixed
+URL served the exact bytes of the real file on disk. An unknown mount
+prefix and an unknown ID inside a known prefix both returned UPnP fault
+701.
 
 **Exit criterion:** Browsing the root shows exactly the configured views;
 adding more than 50 items doesn't break Recently Added (the MiniDLNA bug
-this feature exists to avoid).
+this feature exists to avoid) — met, verified above with a
+`songs_count = 5` / ten-track case.
 
 ---
 

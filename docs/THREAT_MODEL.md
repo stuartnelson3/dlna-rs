@@ -76,18 +76,29 @@ LAN attacker can actually hit.
    `fuzz/fuzz_targets/soap_parse.rs` — 3.4M executions in a 30s local run,
    no crashes.
 
-   **The fail-closed contract on `ContentSource` is now attacker-reachable
-   for real**, via `core::dispatch::browse` (Phase 5): a Browse request's
+   **The fail-closed contract on `ContentSource` is attacker-reachable for
+   real**, via `core::dispatch::browse` (Phase 5): a Browse request's
    `ObjectID` argument — arbitrary attacker-controlled text — becomes an
    `ObjectId` through `ObjectId::new`, which can't fail (it's just an
    opaque string wrapper), and is only checked for validity by the
    `ContentSource::children`/`entry` lookup, which returns `None` (mapped
    to UPnP fault 701 "No Such Object," not a panic or an out-of-bounds
-   index) for anything not actually in the index. The object-ID
-   *namespace* (multiple sources sharing "0", prefix-routing between them)
-   still doesn't exist — that's Phase 8, and per `docs/DESIGN.md` it's
-   `CompositeContentSource`'s job specifically, not something individual
-   sources like `FolderMirror` need to know about.
+   index) for anything not actually in the index.
+
+   **The object-ID namespace is implemented** (Phase 8,
+   `content::composite::CompositeContentSource`): every configured view
+   mounts under its own prefix, joined to the real ID with `$`
+   (`"albums$42"`). A Browse call splits on the first `$`, looks up the
+   matching mount, and fails closed — `None`, UPnP fault 701 — for either
+   an unrecognized prefix or a recognized prefix paired with an ID its
+   mount doesn't know. An individual source like `FolderMirror` or
+   `MusicLibraryView` never sees a prefix at all; only
+   `CompositeContentSource` adds and strips them, exactly as this
+   document originally called for. Verified by hand against a real
+   running instance: an unknown prefix (`"bogus$0"`) and a known prefix
+   with an unknown ID (`"albums$99999"`) both returned fault 701, and a
+   real Browse round-trip through a live mount returned real content
+   (`docs/PLAN.md` Phase 8 has the full verification log).
 
 ## Process-level hardening
 
