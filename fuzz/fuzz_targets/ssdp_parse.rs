@@ -8,5 +8,5 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    let _ = dlna_rs::core::ssdp::message::parse_search_request(data);
+    let _ = dlna_rs::fuzz_support::parse_search_request(data);
 });

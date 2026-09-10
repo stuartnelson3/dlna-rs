@@ -2,10 +2,10 @@
 //! message building are pure functions in [`message`]; this module is just
 //! the socket plumbing around them.
 
-pub mod message;
-pub mod targets;
+pub(crate) mod message;
+pub(crate) mod targets;
 
-pub use targets::Target;
+pub(crate) use targets::Target;
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;

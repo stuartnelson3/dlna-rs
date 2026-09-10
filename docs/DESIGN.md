@@ -50,6 +50,72 @@ up wanting to build a different binary against `core` — doing it
 preemptively would be exactly the kind of speculative complexity this
 project is trying to avoid.
 
+## Encapsulation rule: core modules must not leak their backend library
+
+Every `core` module wraps some specific third-party crate to do its actual
+work — `hyper` for HTTP, `tokio`/`socket2` for the SSDP socket, `if-addrs`
+for interface lookup, `quick-xml` for XML. Each of those was a considered
+choice (see `SPEC.md`'s crate table) but not an irreversible one — the
+whole reason to isolate "protocol mechanics" in `core` is so a choice like
+that can change later without a ripple effect. That only holds if the
+module's *public* API never requires a caller to name the backend's own
+types. If it does, swapping the backend means changing every caller too,
+and the module was never actually isolating anything — just relocating the
+dependency.
+
+**The test, concretely:** could someone rewrite this module's internals
+around a different crate entirely, touching only files inside the module,
+and have every other file in the project compile unchanged? If the answer
+is no, something is leaking.
+
+**Before marking anything `pub`:**
+
+1. Grep for it: `grep -rn "modulename::"` across `src/`, `tests/`, and
+   `fuzz/`. If nothing outside the module's own files matches, it doesn't
+   need to be `pub` — `pub(crate)` (if a sibling module needs it) or
+   nothing at all.
+2. For whatever genuinely is consumed from outside, check its
+   signature for backend types: `hyper::*`, `tokio::net::*`,
+   `socket2::*`, `if_addrs::*`, `quick_xml::*`, and so on as new backends
+   get added (`redb` and `symphonia` in later phases, most likely). If one
+   shows up in a `pub fn`'s parameters or return type, or in a `pub`
+   struct's `pub` field, that's a leak — narrow the type to something this
+   crate owns (a wrapper struct, an enum, plain std types) before it ships.
+3. `std` types, `Duration`, `PathBuf`, and this crate's own domain types
+   (`uuid::Uuid`, `ServiceType`, `Target`) are fine to share freely — they
+   aren't "how do we do the thing" implementation choices, they're shared
+   vocabulary every module needs. The rule is about *backend* libraries
+   specifically, not about minimizing dependencies in general.
+
+**A fuzz target needing a pure function is not an exception.** It's tempting
+to make a whole module `pub` because `fuzz/` (a separate crate — see
+`fuzz/Cargo.toml`) needs to reach one parsing function inside it. Don't:
+that makes everything else in the module externally reachable too, backend
+types included, for the sake of one function nothing else needs. Instead,
+add a one-line re-export to the `fuzz_support` module in `src/lib.rs`:
+
+```rust
+#[doc(hidden)]
+pub mod fuzz_support {
+    pub use crate::core::ssdp::message::parse_search_request;
+    // pub use crate::core::soap::parse_body; // whenever soap_parse lands
+}
+```
+
+The module it re-exports from stays `pub(crate)`. This is the pattern for
+every future fuzz target (`soap_parse`, `range_parse`, `path_resolve` — see
+`PLAN.md` Phases 5–6): one new line here, not a visibility change there.
+
+**Precedent, if you want the worked example:** `core::http` wraps `hyper`.
+`HttpServer::bind`/`serve`/`local_addr` take and return only `Ipv4Addr`,
+`u16`, `String`, `Uuid`, `SocketAddr` — no `hyper` type anywhere. Its
+`router`/`description`/`scpd` submodules (where `hyper::Method` and
+`quick_xml` actually appear) are `pub(crate)`, reachable only through
+`HttpServer`. `core::ssdp` follows the same shape: `Ssdp`'s public API is
+backend-free, and `message`/`targets` are `pub(crate)`, with the one
+legitimate external need (the `ssdp_parse` fuzz target) going through
+`fuzz_support` instead of widening the module.
+
 ## Current state
 
 Phases 1 through 3 are done. The binary parses CLI args, loads and validates
