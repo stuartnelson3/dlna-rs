@@ -17,3 +17,15 @@ uuid = { version = "1.26.1", features = ["v4"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+# NOT "abort": with tokio's task-per-connection model, a panic in one
+# request-handling task should fail that task, not the whole process. A
+# malformed request from an untrusted LAN client (this is a network-facing
+# daemon - see docs/THREAT_MODEL.md) shouldn't be able to take the server
+# down just by triggering a reachable panic.
+panic = "unwind"

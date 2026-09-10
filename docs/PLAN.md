@@ -25,16 +25,27 @@ exists.
 - [x] `cargo init` as a single binary crate named `dlna-rs`.
 - [x] Pin an MSRV via `rust-version` in `Cargo.toml` (1.85, for edition 2024).
 - [x] Pick a license (dual `MIT OR Apache-2.0`) and add the `LICENSE` file(s).
-- [ ] `deny.toml`: license allowlist (MIT/Apache-2.0/BSD-family), crates.io
-      as the only allowed source.
-- [ ] `rustfmt.toml` / clippy config if defaults need overriding.
-- [ ] GitHub Actions workflow: build, test, clippy (`-D warnings`), fmt
-      check, `cargo audit`, `cargo deny check`.
-- [ ] Seed `docs/DESIGN.md` and `docs/THREAT_MODEL.md` as living documents.
+- [x] `deny.toml`: license allowlist (MIT/Apache-2.0/BSD-family), crates.io
+      as the only allowed source. Validated locally with `cargo-deny 0.20.2`
+      (`advisories ok, bans ok, licenses ok, sources ok`).
+- [x] `rustfmt.toml` / clippy config if defaults need overriding. Defaults
+      are fine — nothing to override. The one real fight was clippy's
+      `dead_code` lint firing on config fields that are only read via
+      `Debug` right now; those got scoped `#[allow(dead_code)]` with a
+      comment naming the phase that consumes each one, instead of loosening
+      `-D warnings` project-wide.
+- [x] GitHub Actions workflow: build, test (stable + MSRV), clippy
+      (`-D warnings`), fmt check, `cargo audit`, `cargo deny check` on every
+      PR (`.github/workflows/ci.yml`); a weekly `cargo audit` re-run
+      (`.github/workflows/scheduled.yml`). Fuzz smoke tests are deliberately
+      not wired up yet — there's nothing in `fuzz/fuzz_targets/` for them to
+      run until Phase 2.
+- [x] Seed `docs/DESIGN.md` and `docs/THREAT_MODEL.md` as living documents.
 - [x] Push the initial commit to `origin`.
 
-**Exit criterion:** a PR against `main` runs the full CI workflow and passes
-on an empty `main.rs`.
+**Exit criterion:** a PR against `main` runs the full CI workflow and
+passes. (Met against the actual Phase 1 code, not an empty `main.rs` — by
+the time Phase 0 finished, Phase 1 already existed.)
 
 ---
 

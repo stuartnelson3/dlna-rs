@@ -1,0 +1,24 @@
+name: Scheduled checks
+
+# Independent of code changes: catches newly disclosed RUSTSEC advisories
+# against pinned dependency versions even when nothing was pushed.
+on:
+  schedule:
+    - cron: "0 6 * * 1" # every Monday
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+# A longer (30-60 minute) fuzz run per target belongs here too, once fuzz
+# targets exist (see docs/PLAN.md Phase 9).
