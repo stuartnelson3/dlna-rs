@@ -22,17 +22,16 @@ notes and, once Phase 0 lands, in `docs/DESIGN.md` and
 **Goal:** a repo that builds, lints, and has CI, before any protocol code
 exists.
 
-- [ ] `cargo init` as a single binary crate named `dlna-rs`.
-- [ ] Pin an MSRV via `rust-version` in `Cargo.toml`.
-- [ ] Pick a license (dual `MIT OR Apache-2.0` is the Rust-ecosystem default)
-      and add the `LICENSE` file(s).
+- [x] `cargo init` as a single binary crate named `dlna-rs`.
+- [x] Pin an MSRV via `rust-version` in `Cargo.toml` (1.85, for edition 2024).
+- [x] Pick a license (dual `MIT OR Apache-2.0`) and add the `LICENSE` file(s).
 - [ ] `deny.toml`: license allowlist (MIT/Apache-2.0/BSD-family), crates.io
       as the only allowed source.
 - [ ] `rustfmt.toml` / clippy config if defaults need overriding.
 - [ ] GitHub Actions workflow: build, test, clippy (`-D warnings`), fmt
       check, `cargo audit`, `cargo deny check`.
 - [ ] Seed `docs/DESIGN.md` and `docs/THREAT_MODEL.md` as living documents.
-- [ ] Push the initial commit to `origin`.
+- [x] Push the initial commit to `origin`.
 
 **Exit criterion:** a PR against `main` runs the full CI workflow and passes
 on an empty `main.rs`.
@@ -44,12 +43,15 @@ on an empty `main.rs`.
 **Goal:** the binary starts, loads and validates config, and shuts down
 cleanly.
 
-- [ ] `config.rs`: `serde` + `toml`, `deny_unknown_fields` at every level, a
+- [x] `config.rs`: `serde` + `toml`, `deny_unknown_fields` at every level, a
       typo'd `library.views` entry fails startup with a message that lists
       the valid options.
-- [ ] CLI args (`lexopt`): config path override, `--version`.
-- [ ] Pick `log`+`env_logger` or `tracing` and wire it up.
-- [ ] SIGTERM handling: clean shutdown path (SSDP `ssdp:byebye` plugs into
+- [x] CLI args (`lexopt`): config path override, `--version`.
+- [x] Pick `log`+`env_logger` or `tracing` and wire it up. (Went with
+      `log`+`env_logger`: no near-term need for structured metrics, and it
+      keeps the dependency tree smaller — see the open question this
+      resolves in the spec.)
+- [x] SIGTERM handling: clean shutdown path (SSDP `ssdp:byebye` plugs into
       this in Phase 2).
 
 **Exit criterion:** `dlna-rs --config path.toml` loads and validates a real

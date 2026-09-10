@@ -1,0 +1,27 @@
+[server]
+friendly_name = "example-music"
+port = 8200
+interface = "eth0"
+uuid = "auto"
+
+[media]
+directories = [
+    { path = "/srv/media/music", kind = "audio" },
+]
+follow_symlinks = false
+exclude_patterns = ["*.tmp", ".*"]
+
+[library]
+views = ["folders", "albums", "artists", "recently_added_songs", "recently_added_albums"]
+
+[library.recently_added]
+songs_count = 50
+albums_count = 20
+max_age_days = 90
+
+[rescan]
+interval = "4h"
+on_startup = true
+
+[logging]
+level = "debug"
