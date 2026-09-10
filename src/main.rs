@@ -9,6 +9,7 @@ use dlna_rs::core::http::HttpServer;
 use dlna_rs::core::net;
 use dlna_rs::core::ssdp::Ssdp;
 use dlna_rs::index::{IndexBuilder, SharedIndex};
+use dlna_rs::metadata::tags::TagMetadata;
 use dlna_rs::rescan;
 use dlna_rs::transform::passthrough::PassthroughSource;
 use uuid::Uuid;
@@ -169,6 +170,7 @@ async fn main() -> ExitCode {
         uuid,
         content_source,
         PassthroughSource,
+        TagMetadata,
         media_roots,
     )
     .await

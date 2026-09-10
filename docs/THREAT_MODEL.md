@@ -139,13 +139,26 @@ LAN attacker can actually hit.
 
 A malicious *file* on disk, used as an attack vector against the server
 process itself, is not in the threat model. There's no transcoding in the
-reference implementation, and tag/metadata reading (ID3, Vorbis comments)
-is deferred entirely for MVP — Albums/Artists views use folder-structure
-heuristics precisely so that deferral doesn't cost the feature. When tag
-reading does land, it goes through a pure-Rust, `forbid(unsafe_code)`,
-already-heavily-fuzzed library (`symphonia`), not hand-rolled binary
-parsing. Until then, the server's attacker-reachable parsing surface is
-deliberately narrow: network input only, the three paths above.
+reference implementation. Real tag reading (ID3, Vorbis comments) and
+embedded cover art landed in Phase 12, using `lofty`, not the
+`symphonia` this document originally named. See `docs/PLAN.md`'s
+Phase 12 section for the comparison that changed it. Tag reading parses
+only files the operator already placed under a configured media
+directory: config-provenance input, the same category the Phase 7
+rescan timer's own re-walk already covers, not anything reachable from
+the network. Every `lofty` call in `metadata::tags` is wrapped in error
+handling that logs a parse failure and returns empty fields rather than
+propagating it, so a single malformed tag block can't abort a whole
+scan. Someone with write access to the configured media directory
+already has more direct ways to cause harm than a crafted tag block, so
+that access level itself stays out of scope, same as it always has.
+Albums/Artists grouping still uses folder-structure heuristics, not
+tags: that choice was about avoiding two disagreeing grouping
+mechanisms (see `docs/PLAN.md` Phase 8), not about deferring tag
+reading, which is why adding it in Phase 12 didn't need to touch
+grouping at all. The server's attacker-reachable parsing surface stays
+deliberately narrow: network input only, the three paths above. Tag
+reading doesn't widen it, since it never touches network input.
 
 The Phase 7 rescan timer doesn't change this. It re-walks the *configured*
 media directories on a schedule — config-provenance paths the operator

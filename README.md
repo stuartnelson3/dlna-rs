@@ -12,11 +12,11 @@ be Plex or Jellyfin.
 
 ## Status
 
-Phases 0 through 9 are done, and so is Phase 11, real-client sign-off. A
-real DLNA client found this server over SSDP, browsed its library, and
-played back FLAC and MP3 with working seek. What is left is Phase 10,
-wiring up CI. See [`docs/PLAN.md`](docs/PLAN.md) for the phased plan
-this repo tracks instead of GitHub issues.
+Phases 0 through 9, 11, and 12 are done. A real DLNA client found this
+server over SSDP, browsed its library, and played back FLAC and MP3
+with working seek. What is left is Phase 10, wiring up CI. See
+[`docs/PLAN.md`](docs/PLAN.md) for the phased plan this repo tracks
+instead of GitHub issues.
 
 ## What it does
 
@@ -27,6 +27,8 @@ this repo tracks instead of GitHub issues.
   restart.
 - Real Albums, Artists, and Recently Added views, computed live off the
   index instead of a stale cache, with configurable counts.
+- Real artist, album, and genre tags, and embedded cover art, read from
+  each file once at scan time.
 
 ## What it does not do
 

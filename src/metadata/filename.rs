@@ -19,6 +19,10 @@ impl MetadataProvider for FilenameMetadata {
         Metadata {
             title,
             track_number,
+            artist: None,
+            album: None,
+            genre: None,
+            has_art: false,
         }
     }
 }

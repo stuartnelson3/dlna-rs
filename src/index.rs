@@ -81,6 +81,23 @@ pub struct Item {
     pub path: PathBuf,
     pub size: u64,
     pub modified: SystemTime,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub genre: Option<String>,
+    pub has_art: bool,
+}
+
+/// The tag-derived facts an item carries, read once at scan time by a
+/// `MetadataProvider` and cached here — never re-read per Browse call.
+/// `title`/track number aren't part of this: the scanner already derives
+/// `title` its own way, and track number only matters for in-album sort
+/// order, not storage (see `content::music_library`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TrackTags {
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub genre: Option<String>,
+    pub has_art: bool,
 }
 
 #[derive(Debug)]
@@ -99,6 +116,7 @@ enum NodeKind {
         path: PathBuf,
         size: u64,
         modified: SystemTime,
+        tags: TrackTags,
     },
 }
 
@@ -140,6 +158,7 @@ impl Index {
                 path,
                 size,
                 modified,
+                tags,
             } => Entry::Item(Item {
                 id: id.clone(),
                 parent_id: node
@@ -150,6 +169,10 @@ impl Index {
                 path: path.clone(),
                 size: *size,
                 modified: *modified,
+                artist: tags.artist.clone(),
+                album: tags.album.clone(),
+                genre: tags.genre.clone(),
+                has_art: tags.has_art,
             }),
         })
     }
@@ -210,10 +233,25 @@ impl IndexBuilder {
         size: u64,
         modified: SystemTime,
     ) -> ObjectId {
+        self.add_item_with_tags(parent, title, path, size, modified, TrackTags::default())
+    }
+
+    /// Same as [`add_item`](Self::add_item), plus the tag data a
+    /// `MetadataProvider` read from the file at scan time.
+    pub fn add_item_with_tags(
+        &mut self,
+        parent: &ObjectId,
+        title: String,
+        path: PathBuf,
+        size: u64,
+        modified: SystemTime,
+        tags: TrackTags,
+    ) -> ObjectId {
         self.insert(parent, title, |_| NodeKind::Item {
             path,
             size,
             modified,
+            tags,
         })
     }
 

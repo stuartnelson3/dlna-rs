@@ -14,13 +14,18 @@ pub enum Route {
     Scpd(ServiceType),
     Control(ServiceType),
     Item(ObjectId),
+    Art(ObjectId),
     NotFound,
 }
 
 pub fn route(method: &Method, path: &str) -> Route {
     match *method {
         Method::GET if path == "/description.xml" => Route::DeviceDescription,
-        Method::GET => item_route(path).unwrap_or_else(|| scpd_route(path)),
+        Method::GET => item_route(path)
+            .or_else(|| art_route(path))
+            .unwrap_or_else(|| scpd_route(path)),
+        // No Range/partial-content story for art, so no need to route it
+        // for HEAD - a deliberate, small scope call, not an oversight.
         Method::HEAD => item_route(path).unwrap_or(Route::NotFound),
         Method::POST => control_route(path),
         _ => Route::NotFound,
@@ -55,6 +60,23 @@ fn item_route(path: &str) -> Option<Route> {
 /// entry.
 pub fn parse_item_path(path: &str) -> Option<&str> {
     let id = path.strip_prefix("/item/")?;
+    if id.is_empty() || id.contains('/') {
+        return None;
+    }
+    Some(id)
+}
+
+fn art_route(path: &str) -> Option<Route> {
+    parse_art_path(path).map(|id| Route::Art(ObjectId::new(id)))
+}
+
+/// Parses `/art/{id}` request paths — same rule as `parse_item_path`,
+/// copied rather than shared: two small, single-purpose, pure functions
+/// are simpler than one parameterized over a prefix for a two-site
+/// reuse (matches this module's existing `item_route`/`scpd_route`
+/// shape, which is already two sibling functions, not one).
+pub fn parse_art_path(path: &str) -> Option<&str> {
+    let id = path.strip_prefix("/art/")?;
     if id.is_empty() || id.contains('/') {
         return None;
     }
@@ -154,6 +176,50 @@ mod tests {
         ];
         for candidate in candidates {
             let _ = parse_item_path(candidate);
+        }
+    }
+
+    #[test]
+    fn routes_get_on_an_art_path() {
+        assert_eq!(
+            route(&Method::GET, "/art/42"),
+            Route::Art(ObjectId::new("42"))
+        );
+    }
+
+    #[test]
+    fn head_on_an_art_path_is_not_found() {
+        // No Range story for art - a deliberate scope call, not a bug.
+        assert_eq!(route(&Method::HEAD, "/art/42"), Route::NotFound);
+    }
+
+    #[test]
+    fn post_on_an_art_path_is_not_found() {
+        assert_eq!(route(&Method::POST, "/art/42"), Route::NotFound);
+    }
+
+    #[test]
+    fn parse_art_path_examples() {
+        assert_eq!(parse_art_path("/art/42"), Some("42"));
+        assert_eq!(parse_art_path("/art/"), None);
+        assert_eq!(parse_art_path("/art"), None);
+        assert_eq!(parse_art_path("/art/42/"), None);
+        assert_eq!(parse_art_path("/other/42"), None);
+    }
+
+    #[test]
+    fn parse_art_path_never_panics_on_arbitrary_short_inputs() {
+        let candidates = [
+            "",
+            "/",
+            "/art",
+            "/art/",
+            "//art//",
+            "/art/\u{0}",
+            "/art/../../etc/passwd",
+        ];
+        for candidate in candidates {
+            let _ = parse_art_path(candidate);
         }
     }
 }

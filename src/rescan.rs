@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use crate::config::MediaConfig;
 use crate::index::SharedIndex;
+use crate::metadata::tags::TagMetadata;
 use crate::scanner;
 
 /// Runs forever: scans once immediately if `on_startup`, then re-scans
@@ -31,7 +32,7 @@ pub async fn run(media: MediaConfig, index: SharedIndex, interval: Duration, on_
 
 async fn rescan_once(media: &MediaConfig, index: &SharedIndex) {
     let media = media.clone();
-    match tokio::task::spawn_blocking(move || scanner::scan(&media)).await {
+    match tokio::task::spawn_blocking(move || scanner::scan(&media, &TagMetadata)).await {
         Ok(new_index) => {
             log::info!("rescan complete: {} entries indexed", new_index.len());
             index.replace(new_index);

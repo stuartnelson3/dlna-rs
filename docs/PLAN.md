@@ -750,10 +750,105 @@ Phase 9. **This is MVP v0.1.**
 
 ---
 
+## Phase 12 — Real tag metadata and embedded cover art
+
+**Goal:** real `artist`/`album`/`genre` tags and embedded cover art, on
+top of the filename/folder heuristics MVP shipped with.
+
+A post-MVP research pass compared `symphonia` (the library named in the
+original private planning notes) against `lofty` for this job. Verdict:
+`lofty`. `symphonia` has no metadata-only mode. Enabling its MP3/MP4
+demuxers bundles real decoder crates this project would never call,
+since it never transcodes. `lofty` is purpose-built for tag and
+embedded-picture reading: about a dozen small dependencies, mostly
+compression/checksum utilities for tag blocks, and no audio codec among
+them (confirmed with `cargo tree -p lofty` after adding it).
+
+Adding `lofty` surfaced one real, if minor, supply-chain finding:
+`cargo audit`/`cargo deny` both flag `paste` (a proc macro `lofty_attr`
+depends on) as RUSTSEC-2024-0436, "unmaintained." Not a vulnerability:
+the author archived the repository as feature-complete, and `paste`
+runs only at compile time, shipping no code into the built binary.
+Accepted and recorded, not silently ignored: `deny.toml` now has an
+explicit `ignore` entry for this one advisory ID, with the reasoning
+written next to it.
+
+- [x] Extend `core::metadata_provider::Metadata` with `artist`, `album`,
+      `genre`, and `has_art`: fields its own doc comment already
+      promised in Phase 8. `metadata::filename::FilenameMetadata`
+      (unchanged, still the cheap, no-file-I/O implementation used every
+      time `content::music_library` sorts a container's children) fills
+      them with `None`/`false`. A new `metadata::tags::TagMetadata`
+      fills all four with a real `lofty` read, used only by the
+      scanner, once per file, with the result cached on `index::Item`
+      (new `TrackTags` struct). It is never re-read per Browse call.
+      Reading a tag on every Browse instead of once at scan time would
+      repeat Phase 8's bug 4: real work, done once, turned into real
+      work done on every request.
+- [x] `lofty` is named in exactly one file, `src/metadata/tags.rs`. Its
+      own `MimeType` enum never crosses the `ArtSource` trait boundary.
+      A small internal match maps it to this crate's own `&'static str`
+      MIME constants, the same fallback convention
+      `core::didl::format::mime_for` already uses. A future swap to a
+      different tag library touches only that one file: the
+      encapsulation rule doing exactly the job it exists for.
+- [x] New `core::art_source::ArtSource` trait, separate from
+      `ByteSource`: serving a whole audio file and pulling a picture out
+      of a tag block are different jobs, and conflating them would force
+      `transform::passthrough::PassthroughSource` to grow a capability
+      it has no business having. It reads fresh from disk on every call.
+      No picture bytes are cached in the index, the same "don't hold
+      large blobs in memory" discipline `ByteSource` already follows, so
+      a library with thousands of embedded covers doesn't bloat memory
+      use.
+- [x] New route, `GET /art/{id}`, mirroring `/item/{id}`:
+      `core::http::router::parse_art_path` is a literal copy of
+      `parse_item_path` with a different prefix (two small, single-
+      purpose functions, not one parameterized over a prefix, matching
+      this module's existing `item_route`/`scpd_route` shape), and
+      `handle_art` reuses `verify_within_roots` as-is. No `HEAD` and no
+      `Range` support for art. Real embedded covers are small, a single
+      whole-body response is enough, and that's a deliberate, named
+      scope call, not an oversight. `parse_art_path` was added to the
+      `path_resolve` fuzz target alongside `parse_item_path`, since it's
+      now the same kind of attacker-reachable parsing site.
+- [x] DIDL-Lite renders `<dc:creator>` and `<upnp:artist>` together when
+      an artist is known (real DLNA clients disagree on which one they
+      read, so emitting both costs nothing), `<upnp:album>`/
+      `<upnp:genre>` when present, and `<upnp:albumArtURI>` when
+      `has_art` is true. Each element is left out entirely, never
+      rendered empty, when its source field is absent. No
+      `dlna:profileID` attribute on the art URI: this server serves the
+      embedded picture byte-for-byte with no resizing, so a profile
+      claim like `JPEG_TN` (a specific pixel size) would be a promise it
+      can't back. Omitting it also means no new XML namespace was
+      needed. Every new field is user-controlled binary tag data and
+      goes through the same `escape()` helper `title` already used.
+
+**Verified:** `cargo build`/`test`/`fmt --check`/`clippy -D warnings`
+all clean (166 lib tests, 19 integration tests). `cargo audit` and
+`cargo deny check` both pass clean with `lofty` added (the one real
+finding, `paste`'s unmaintained advisory, is accepted and recorded in
+`deny.toml`, not silently passed over). The `path_resolve` fuzz target
+ran 25.9M executions in 20s with the new `parse_art_path` included, no
+crashes. And by hand against a real running instance, with
+a real tagged MP3 carrying a real embedded 1x1 PNG: `Browse` on the
+track showed every new element with the real values, and no
+`dlna:profileID`. `GET /art/{id}` returned `200`, `Content-Type:
+image/png`, and the exact embedded PNG bytes, confirmed byte-for-byte.
+An unknown art ID and an item with no embedded picture both returned
+`404`. A `HEAD` request to `/art/{id}` also returned `404`, confirming
+the deliberate scope decision holds.
+
+**Exit criterion:** a real tagged file's artist/album/genre appear in
+Browse results, and its embedded cover art is fetchable over HTTP. Met,
+verified above.
+
+---
+
 ## After MVP
 
 Not phased yet — pick these up only as real need shows up, per the
 project's non-goals: client-specific quirk handling, a persisted index
 (`redb`) if startup time on a large library becomes a real problem,
-`symphonia`-backed tag metadata and Genre browsing, Various-Artists
-handling, inotify-based instant rescan.
+Various-Artists handling, inotify-based instant rescan.

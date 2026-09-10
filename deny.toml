@@ -8,6 +8,16 @@ all-features = true
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
+ignore = [
+    # paste, pulled in transitively by lofty (Phase 12) through its
+    # lofty_attr proc macro. "Unmaintained" here means the author
+    # archived the repo as feature-complete, not that it has a known
+    # bug: it's a tiny proc macro that runs at compile time only and
+    # ships no code into the built binary. Accepted risk, not ignored
+    # by default - revisit if lofty ever drops the dependency or a real
+    # vulnerability (not just "unmaintained") gets filed against it.
+    "RUSTSEC-2024-0436",
+]
 
 [licenses]
 allow = [

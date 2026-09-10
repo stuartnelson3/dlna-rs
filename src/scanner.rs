@@ -11,9 +11,13 @@ use walkdir::WalkDir;
 
 use crate::config::MediaConfig;
 use crate::core::didl::format::is_audio_extension;
-use crate::index::{Index, IndexBuilder, ObjectId};
+use crate::core::metadata_provider::MetadataProvider;
+use crate::index::{Index, IndexBuilder, ObjectId, TrackTags};
 
-pub fn scan(media: &MediaConfig) -> Index {
+/// `tags` reads each file's real metadata once, here, at scan time - see
+/// `core::metadata_provider`'s doc comment for why that has to happen
+/// here and not on every Browse call.
+pub fn scan(media: &MediaConfig, tags: &dyn MetadataProvider) -> Index {
     let mut builder = IndexBuilder::new();
     for dir in &media.directories {
         scan_one_directory(
@@ -21,6 +25,7 @@ pub fn scan(media: &MediaConfig) -> Index {
             &dir.path,
             media.follow_symlinks,
             &media.exclude_patterns,
+            tags,
         );
     }
     builder.build()
@@ -36,6 +41,7 @@ fn scan_one_directory(
     path: &Path,
     follow_symlinks: bool,
     exclude_patterns: &[String],
+    tags: &dyn MetadataProvider,
 ) {
     let mut container_at_depth: Vec<ObjectId> = Vec::new();
 
@@ -68,12 +74,24 @@ fn scan_one_directory(
             container_at_depth.push(id);
         } else if entry.file_type().is_file() && is_audio_extension(entry.path()) {
             if let Ok(metadata) = entry.metadata() {
-                builder.add_item(
+                // title/track_number aren't used here - the scanner
+                // already derives title from the filename above, and
+                // track number only matters for in-album sort order,
+                // read fresh at Browse time by `content::music_library`.
+                let read = tags.metadata(entry.path());
+                let track_tags = TrackTags {
+                    artist: read.artist,
+                    album: read.album,
+                    genre: read.genre,
+                    has_art: read.has_art,
+                };
+                builder.add_item_with_tags(
                     &parent,
                     title,
                     entry.path().to_path_buf(),
                     metadata.len(),
                     metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                    track_tags,
                 );
             }
         }
@@ -130,6 +148,7 @@ mod tests {
     use super::*;
     use crate::config::{MediaDirectory, MediaKind};
     use crate::index::Entry;
+    use crate::metadata::filename::FilenameMetadata;
     use std::fs;
     use tempfile::TempDir;
 
@@ -195,7 +214,7 @@ mod tests {
             fs::write(root.join("Artist/Album/.DS_Store"), b"").unwrap();
         });
         let config = media_config(&f.root, &["*.tmp", ".*"]);
-        let index = scan(&config);
+        let index = scan(&config, &FilenameMetadata);
 
         let top = container_named(&index, &ObjectId::root(), &top_level_name(&f.root)).unwrap();
         assert_eq!(top.child_count, 1);
@@ -223,6 +242,64 @@ mod tests {
         path.file_name().unwrap().to_string_lossy().into_owned()
     }
 
+    /// A real, tagged MP3: 30 repeats of one silent MPEG-1 Layer III
+    /// frame (lofty needs several consistent frames to trust the file
+    /// is really an MP3 - one alone isn't enough, verified directly),
+    /// with a real artist/album/genre tag written via lofty's own API.
+    fn write_tagged_mp3(path: &std::path::Path) {
+        let mut frame = vec![0xFFu8, 0xFB, 0x90, 0x00];
+        frame.resize(417, 0);
+        fs::write(path, frame.repeat(30)).unwrap();
+
+        use lofty::config::WriteOptions;
+        use lofty::file::{AudioFile, TaggedFileExt};
+        use lofty::tag::{Accessor, Tag};
+
+        let mut tagged_file = lofty::read_from_path(path).unwrap();
+        if tagged_file.primary_tag().is_none() {
+            tagged_file.insert_tag(Tag::new(tagged_file.primary_tag_type()));
+        }
+        let tag = tagged_file.primary_tag_mut().unwrap();
+        tag.set_artist("Scan Test Artist".to_string());
+        tag.set_album("Scan Test Album".to_string());
+        tagged_file
+            .save_to_path(path, WriteOptions::default())
+            .unwrap();
+    }
+
+    #[test]
+    fn scanning_with_tag_metadata_populates_the_items_real_tags() {
+        let f = fixture(|root| write_tagged_mp3(&root.join("track.mp3")));
+        let config = media_config(&f.root, &[]);
+
+        let index = scan(&config, &crate::metadata::tags::TagMetadata);
+
+        let top = container_named(&index, &ObjectId::root(), &top_level_name(&f.root)).unwrap();
+        let children = index.children(&top.id).unwrap();
+        let Entry::Item(item) = &children[0] else {
+            panic!("expected an item");
+        };
+        assert_eq!(item.artist.as_deref(), Some("Scan Test Artist"));
+        assert_eq!(item.album.as_deref(), Some("Scan Test Album"));
+    }
+
+    #[test]
+    fn scanning_with_filename_metadata_leaves_tags_empty() {
+        // The default used everywhere else in this file's tests - real
+        // tag fields stay None, matching FilenameMetadata's contract.
+        let f = fixture(|root| write_tagged_mp3(&root.join("track.mp3")));
+        let config = media_config(&f.root, &[]);
+
+        let index = scan(&config, &FilenameMetadata);
+
+        let top = container_named(&index, &ObjectId::root(), &top_level_name(&f.root)).unwrap();
+        let children = index.children(&top.id).unwrap();
+        let Entry::Item(item) = &children[0] else {
+            panic!("expected an item");
+        };
+        assert_eq!(item.artist, None);
+    }
+
     #[test]
     fn excluded_directory_is_not_descended_into() {
         let f = fixture(|root| {
@@ -231,7 +308,7 @@ mod tests {
             fs::write(root.join("song.mp3"), b"").unwrap();
         });
         let config = media_config(&f.root, &[".*"]);
-        let index = scan(&config);
+        let index = scan(&config, &FilenameMetadata);
 
         let top = container_named(&index, &ObjectId::root(), &top_level_name(&f.root)).unwrap();
         assert_eq!(top.child_count, 1, "only song.mp3 should remain");
@@ -258,7 +335,7 @@ mod tests {
             follow_symlinks: false,
             exclude_patterns: vec![],
         };
-        let index = scan(&config);
+        let index = scan(&config, &FilenameMetadata);
 
         let root_children = index.children(&ObjectId::root()).unwrap();
         assert_eq!(root_children.len(), 2);
@@ -268,7 +345,7 @@ mod tests {
     fn empty_directory_scans_to_an_empty_root() {
         let f = fixture(|_root| {});
         let config = media_config(&f.root, &[]);
-        let index = scan(&config);
+        let index = scan(&config, &FilenameMetadata);
         let top = container_named(&index, &ObjectId::root(), &top_level_name(&f.root)).unwrap();
         assert_eq!(top.child_count, 0);
     }
@@ -340,7 +417,7 @@ mod tests {
             }
 
             let config = media_config(dir.path(), &["*.tmp", ".*"]);
-            let index = scan(&config);
+            let index = scan(&config, &FilenameMetadata);
             assert_index_is_consistent(&index);
         }
     }

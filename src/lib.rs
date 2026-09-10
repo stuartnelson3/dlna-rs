@@ -4,7 +4,7 @@ pub mod config;
 pub mod content;
 pub mod core;
 pub mod index;
-pub(crate) mod metadata;
+pub mod metadata;
 pub mod rescan;
 pub mod scanner;
 pub mod transform;
@@ -18,7 +18,7 @@ pub mod transform;
 #[doc(hidden)]
 pub mod fuzz_support {
     pub use crate::core::http::range::parse as parse_range;
-    pub use crate::core::http::router::parse_item_path;
+    pub use crate::core::http::router::{parse_art_path, parse_item_path};
     pub use crate::core::soap::parse_action as parse_soap_action;
     pub use crate::core::ssdp::message::parse_search_request;
 }

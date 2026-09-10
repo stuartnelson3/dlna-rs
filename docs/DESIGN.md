@@ -38,8 +38,13 @@ in the abstract:
     files byte-for-byte. This is where a downstream fork would plug in
     transcoding — not something this project builds.
   - `MetadataProvider` — given a file path, returns whatever title/artist/
-    album metadata is available. MVP ships filename/folder-heuristic
-    parsing only; no binary tag parsing (see `THREAT_MODEL.md` for why).
+    album metadata is available. Two implementations ship: a cheap,
+    filename-only one used on every Browse, and a `lofty`-backed one
+    that reads real tags once per file, at scan time (Phase 12).
+  - `ArtSource` — given a resolved item path, returns its embedded cover
+    art, if it has any (Phase 12). Reads fresh from disk per request,
+    like `ByteSource`, so a large library's embedded art never sits in
+    memory.
 
 It's one crate with modules that mirror this boundary
 (`core::{ssdp, http, didl, dispatch}`, `content::*`, `transform::*`,
@@ -273,6 +278,19 @@ abstract: a real DLNA client, not this project's own test tooling,
 exercising discovery, ContentDirectory, and Range serving together. See
 `docs/PLAN.md`'s Phase 11 section for the details.
 
+Phase 12 is the first real post-MVP addition: real tag reading and
+embedded cover art, using `lofty` rather than the `symphonia` the
+private planning notes originally named (see `docs/PLAN.md`'s Phase 12
+section for the comparison and why it changed). It adds the fourth
+extension point, `ArtSource`, and gives `MetadataProvider` a second real
+implementation, `metadata::tags::TagMetadata`, alongside the existing
+filename-only one. The two live side by side on purpose: the cheap one
+still runs on every Browse to sort tracks, and the `lofty`-backed one
+runs once per file, at scan time, with its result cached on `index::Item`.
+`lofty` itself is named in exactly one file. Nothing in `core`, the
+scanner's call shape, or any consumer would need to change if that
+backend were ever swapped for something else.
+
 See [`PLAN.md`](PLAN.md) for what's next and why the phases are ordered the
 way they are.
 
@@ -318,13 +336,27 @@ nothing outside `core` names it directly, only the concrete
 `FilenameMetadata` type. `content::composite` is `pub` — `main.rs` and
 `tests/integration.rs` both construct `CompositeContentSource` directly,
 the same real-external-use test every other `pub` module here passes.
-`content::music_library` and the top-level `metadata` module are
-`pub(crate)`: unlike `FolderMirror` or `PassthroughSource`,
-`MusicLibraryView` and `FilenameMetadata` are never constructed outside
-`src/` — only `content::composite` (a sibling module, same crate) reaches
-them, so the grep check says `pub(crate)`, not `pub`, and that's what
-they are. Worth narrowing later if a real external caller shows up; not
-worth guessing at now.
+`content::music_library` and `metadata::filename` are `pub(crate)`:
+unlike `FolderMirror` or `PassthroughSource`, `MusicLibraryView` and
+`FilenameMetadata` are never constructed outside `src/` — only
+`content::composite`/`metadata::tags` (sibling modules, same crate)
+reach them, so the grep check says `pub(crate)`, not `pub`, and that's
+what they are. (The top-level `metadata` module itself became `pub` in Phase 12, once
+something outside `src/` genuinely needed one of its submodules; see
+below.) Worth narrowing later if a real external caller
+shows up; not worth guessing at now.
+
+Phase 12 added two more modules. `metadata::tags` (holding
+`TagMetadata`) is `pub`: `main.rs` and `tests/integration.rs` both
+construct it directly, to pass as `HttpServer::bind`'s `art_source`
+argument, the same real-external-use test everything else here passes.
+That's also why the top-level `metadata` module (`src/lib.rs`) went
+from `pub(crate)` to `pub` this phase. A module can never be more open
+than its parent, and `main.rs` now genuinely needs to reach through it.
+`core::art_source` (the `ArtSource` trait) stays `pub(crate)`, same
+reasoning as `core::byte_source`: `HttpServer::bind` takes `impl
+ArtSource + 'static`, so `main.rs` and `tests/integration.rs` only ever
+need to name the concrete `TagMetadata` type, never the trait itself.
 
 ## Config
 

@@ -30,6 +30,7 @@ use uuid::Uuid;
 
 use self::description::DeviceInfo;
 use self::router::Route;
+use crate::core::art_source::ArtSource;
 use crate::core::byte_source::ByteSource;
 use crate::core::content_source::ContentSource;
 use crate::core::device::ServiceType;
@@ -45,6 +46,7 @@ pub struct HttpServer {
     port: u16,
     content_source: Arc<dyn ContentSource>,
     byte_source: Arc<dyn ByteSource>,
+    art_source: Arc<dyn ArtSource>,
     /// Canonicalized once at startup. Every item GET/HEAD re-canonicalizes
     /// the item's own path and checks it against these — defense in depth
     /// against `follow_symlinks` escaping the configured library (see
@@ -66,6 +68,12 @@ impl HttpServer {
     /// Fails if any `media_root` doesn't exist — a media directory that's
     /// missing at startup is a configuration problem worth failing loudly
     /// on, not silently serving an empty library for.
+    ///
+    /// One more plain argument than clippy's default cap, for the eighth
+    /// extension point (`art_source`) — a wrapper struct here would only
+    /// exist to satisfy the lint, not to make any of the four call sites
+    /// clearer, so this is a deliberate, named exception, not a lapse.
+    #[allow(clippy::too_many_arguments)]
     pub async fn bind(
         interface_addr: Ipv4Addr,
         port: u16,
@@ -73,6 +81,7 @@ impl HttpServer {
         uuid: Uuid,
         content_source: impl ContentSource + 'static,
         byte_source: impl ByteSource + 'static,
+        art_source: impl ArtSource + 'static,
         media_roots: Vec<PathBuf>,
     ) -> std::io::Result<Arc<HttpServer>> {
         let listener = TcpListener::bind((interface_addr, port)).await?;
@@ -92,6 +101,7 @@ impl HttpServer {
             port,
             content_source: Arc::new(content_source),
             byte_source: Arc::new(byte_source),
+            art_source: Arc::new(art_source),
             media_roots,
         }))
     }
@@ -141,6 +151,7 @@ impl HttpServer {
             Route::Scpd(service) => xml_response(scpd::document(service).to_string()),
             Route::Control(service) => self.handle_control(service, req).await,
             Route::Item(id) => self.handle_item(&id, req.method(), req.headers()).await,
+            Route::Art(id) => self.handle_art(&id).await,
             Route::NotFound => not_found(),
         })
     }
@@ -226,6 +237,35 @@ impl HttpServer {
         } else {
             response
         }
+    }
+
+    /// No Range support here, unlike `handle_item` — real embedded cover
+    /// art is small, a single whole-body response is enough, and the
+    /// simpler handler is the deliberate trade for that (see
+    /// `core::art_source`'s doc comment).
+    async fn handle_art(&self, id: &ObjectId) -> Response<Full<Bytes>> {
+        let Some(Entry::Item(item)) = self.content_source.entry(id) else {
+            return not_found();
+        };
+
+        let Ok(resolved) = self.verify_within_roots(&item.path).await else {
+            log::warn!(
+                "item {id} path {} resolved outside the configured media roots; refusing to serve its art",
+                item.path.display()
+            );
+            return not_found();
+        };
+
+        let Some(art) = self.art_source.art(&resolved).await else {
+            return not_found();
+        };
+
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", art.mime)
+            .header("Content-Length", art.bytes.len().to_string())
+            .body(Full::new(art.bytes))
+            .expect("a real MIME string and byte length are always valid header values")
     }
 
     async fn verify_within_roots(&self, path: &Path) -> std::io::Result<PathBuf> {
@@ -501,6 +541,7 @@ mod tests {
             Uuid::new_v4(),
             PanicsOnBoom,
             crate::transform::passthrough::PassthroughSource,
+            crate::metadata::tags::TagMetadata,
             Vec::new(),
         )
         .await

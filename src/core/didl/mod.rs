@@ -9,7 +9,7 @@ pub mod format;
 
 use quick_xml::escape::escape;
 
-use crate::index::Entry;
+use crate::index::{Entry, Item, ObjectId};
 
 const DIDL_NAMESPACES: &str = r#"xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/""#;
 
@@ -41,10 +41,11 @@ fn render_one(entry: &Entry, base_url: &str) -> String {
             )
         }
         Entry::Item(i) => format!(
-            r#"<item id="{id}" parentID="{parent}" restricted="1"><dc:title>{title}</dc:title><upnp:class>object.item.audioItem.musicTrack</upnp:class><res protocolInfo="{protocol_info}" size="{size}">{url}</res></item>"#,
+            r#"<item id="{id}" parentID="{parent}" restricted="1"><dc:title>{title}</dc:title>{extras}<upnp:class>object.item.audioItem.musicTrack</upnp:class><res protocolInfo="{protocol_info}" size="{size}">{url}</res></item>"#,
             id = i.id,
             parent = i.parent_id,
             title = escape(&i.title),
+            extras = extra_item_fields(i, base_url),
             protocol_info = format::protocol_info(&i.path),
             size = i.size,
             url = item_url(base_url, &i.id),
@@ -52,8 +53,49 @@ fn render_one(entry: &Entry, base_url: &str) -> String {
     }
 }
 
-fn item_url(base_url: &str, id: &crate::index::ObjectId) -> String {
+/// The real-tag elements a track's `MetadataProvider` may or may not
+/// have filled in (see `core::metadata_provider`). Each is left out
+/// entirely when its source field is `None`/`false` — an absent tag
+/// means no element, never an empty one.
+fn extra_item_fields(item: &Item, base_url: &str) -> String {
+    let mut fields = String::new();
+
+    // Both dc:creator and upnp:artist, deliberately: real DLNA clients
+    // disagree on which one they read for the artist, so emitting both
+    // costs nothing and works with more of them.
+    if let Some(artist) = &item.artist {
+        let escaped = escape(artist);
+        fields.push_str(&format!(
+            "<dc:creator>{escaped}</dc:creator><upnp:artist>{escaped}</upnp:artist>"
+        ));
+    }
+    if let Some(album) = &item.album {
+        fields.push_str(&format!("<upnp:album>{}</upnp:album>", escape(album)));
+    }
+    if let Some(genre) = &item.genre {
+        fields.push_str(&format!("<upnp:genre>{}</upnp:genre>", escape(genre)));
+    }
+    if item.has_art {
+        // No dlna:profileID attribute: this server serves the embedded
+        // picture byte-for-byte, with no resizing, so a profile claim
+        // like JPEG_TN (a specific pixel size) would be a promise it
+        // can't back. Omitting it also means no new XML namespace is
+        // needed here at all.
+        fields.push_str(&format!(
+            "<upnp:albumArtURI>{}</upnp:albumArtURI>",
+            art_url(base_url, &item.id)
+        ));
+    }
+
+    fields
+}
+
+fn item_url(base_url: &str, id: &ObjectId) -> String {
     format!("{base_url}/item/{id}")
+}
+
+fn art_url(base_url: &str, id: &ObjectId) -> String {
+    format!("{base_url}/art/{id}")
 }
 
 #[cfg(test)]
@@ -137,6 +179,71 @@ mod tests {
         );
         let index = builder.build();
         let entry = index.entry(&id).unwrap();
+
+        let xml = render(&[entry], "http://192.168.1.5:8200");
+        assert_well_formed(&xml);
+        assert!(!xml.contains("<Live>"), "raw '<' should have been escaped");
+    }
+
+    fn item_with_tags(tags: crate::index::TrackTags) -> Entry {
+        let mut builder = IndexBuilder::new();
+        let id = builder.add_item_with_tags(
+            &crate::index::ObjectId::root(),
+            "Track.mp3".to_string(),
+            PathBuf::from("/music/Track.mp3"),
+            1,
+            SystemTime::UNIX_EPOCH,
+            tags,
+        );
+        builder.build().entry(&id).unwrap()
+    }
+
+    #[test]
+    fn renders_real_tags_and_cover_art_when_present() {
+        let entry = item_with_tags(crate::index::TrackTags {
+            artist: Some("Test Artist".to_string()),
+            album: Some("Test Album".to_string()),
+            genre: Some("Test Genre".to_string()),
+            has_art: true,
+        });
+
+        let xml = render(std::slice::from_ref(&entry), "http://192.168.1.5:8200");
+        assert_well_formed(&xml);
+        assert!(xml.contains("<dc:creator>Test Artist</dc:creator>"));
+        assert!(xml.contains("<upnp:artist>Test Artist</upnp:artist>"));
+        assert!(xml.contains("<upnp:album>Test Album</upnp:album>"));
+        assert!(xml.contains("<upnp:genre>Test Genre</upnp:genre>"));
+        assert!(xml.contains(&format!(
+            "<upnp:albumArtURI>http://192.168.1.5:8200/art/{}</upnp:albumArtURI>",
+            entry.id()
+        )));
+    }
+
+    #[test]
+    fn omits_every_extra_element_when_no_tags_are_present() {
+        let entry = item_with_tags(crate::index::TrackTags::default());
+
+        let xml = render(&[entry], "http://192.168.1.5:8200");
+        assert_well_formed(&xml);
+        for element in [
+            "dc:creator",
+            "upnp:artist",
+            "upnp:album",
+            "upnp:genre",
+            "upnp:albumArtURI",
+        ] {
+            assert!(!xml.contains(element), "should not render <{element}>");
+        }
+    }
+
+    #[test]
+    fn escapes_special_characters_in_tag_fields() {
+        let entry = item_with_tags(crate::index::TrackTags {
+            artist: Some("Rock & Roll <Live>".to_string()),
+            album: None,
+            genre: None,
+            has_art: false,
+        });
 
         let xml = render(&[entry], "http://192.168.1.5:8200");
         assert_well_formed(&xml);

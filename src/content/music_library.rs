@@ -675,7 +675,7 @@ mod tests {
             follow_symlinks: false,
             exclude_patterns: vec!["*.tmp".to_string(), ".*".to_string()],
         };
-        SharedIndex::new(crate::scanner::scan(&media))
+        SharedIndex::new(crate::scanner::scan(&media, &FilenameMetadata))
     }
 
     proptest::proptest! {
