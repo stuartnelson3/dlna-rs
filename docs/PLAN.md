@@ -175,16 +175,51 @@ running instance reachable on the LAN.
 **Goal:** the server has an in-memory picture of the media directory and can
 serve it as a 1:1 tree.
 
-- [ ] `index.rs`: in-memory index (`HashMap`/`Vec`-based).
-- [ ] `scanner.rs`: `walkdir`-based walk, `exclude_patterns` support.
-- [ ] `content::folder::FolderMirror` implementing `trait ContentSource`.
-- [ ] Design the object-ID namespace scheme (prefix per `ContentSource`, per
-      MiniDLNA's `1$FF0` pattern).
-- [ ] Property test: an arbitrary directory tree never panics the scanner
-      and never produces a broken parent/child link.
+- [x] `index.rs`: `HashMap<ObjectId, Node>`-based index. Two shapes on
+      purpose: internal `Node`/`NodeKind` storage (a container's real
+      child-ID list) vs. the `Entry`/`Container`/`Item` view handed to
+      callers (a container's child *count*, not the list — Browse only
+      needs a count at that level). `IndexBuilder` is the only way to
+      construct one, so ID assignment and parent/child linking happen in
+      exactly one place.
+- [x] `scanner.rs`: `walkdir`-based walk (chosen specifically for its
+      symlink-loop handling), `exclude_patterns` support via a small
+      hand-rolled `*`-only glob matcher (config-provenance, not
+      network-provenance, so it's not on the fuzz list — just needs unit
+      tests, which it has). Audio files recognized by extension
+      allowlist, since there's no tag/metadata parsing (see
+      `THREAT_MODEL.md`). One correction made while implementing:
+      `exclude_patterns` applies to descendants of a configured
+      directory, not the directory itself — otherwise a pattern like
+      `.*` could silently exclude an entire configured library if its
+      own folder name happened to start with a dot, with no error to
+      explain why the library came up empty.
+- [x] `content::folder::FolderMirror` implementing `trait ContentSource`
+      (trait defined in `content/mod.rs`, per the spec's module
+      convention). A thin wrapper for now — Phase 8's `MusicLibraryView`
+      is where a `ContentSource` actually does real query logic.
+- [x] Object-ID namespace: `"0"` is reserved for the root, per the UPnP
+      ContentDirectory spec. Everything else is a plain per-scan integer
+      — **no source-prefix scheme yet**, and that's deliberate: with only
+      one `ContentSource` mounted, there's nothing to namespace against.
+      The prefixing itself (MiniDLNA's `1$FF0` pattern) is
+      `CompositeContentSource`'s job once Phase 8 actually mounts
+      multiple sources at once — it intercepts `"0"`, presents the
+      union of enabled views, and prepends/strips a `"{prefix}$"` before
+      talking to each child source. Individual sources like `FolderMirror`
+      never need to know a prefix exists.
+- [x] Property test (`proptest`, new dev-dependency): generates 1-20
+      arbitrary nested paths (shared prefixes become shared directories,
+      so this produces real varied tree shapes) with a mix of audio and
+      non-audio extensions, scans them, and walks the resulting index
+      from root asserting every reachable child both exists and has its
+      `parent_id` pointing straight back. 256 cases in ~0.2s.
 
-**Exit criterion:** the property test passes, and the index matches a fixture
-directory tree exactly after a scan.
+**Exit criterion:** the property test passes, and the index matches a
+fixture directory tree exactly after a scan — `exact_fixture_tree_matches_expected_shape`
+in `scanner.rs` builds `Artist/Album/{01 - Track.flac, 02 - Track.mp3,
+cover.jpg, .DS_Store}` and asserts the index contains exactly the two
+audio files, correctly nested, with the image and dotfile excluded.
 
 ---
 

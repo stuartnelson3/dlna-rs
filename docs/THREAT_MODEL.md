@@ -47,9 +47,19 @@ LAN attacker can actually hit.
    rejects anything that isn't valid UTF-8 or a well-formed M-SEARCH
    request-line, returns `Result` rather than panicking on any malformed
    input. Fuzzed with `fuzz/fuzz_targets/ssdp_parse.rs` — 31M executions in
-   a 30s local run, no crashes (see `docs/PLAN.md` Phase 2). SOAP body
-   parsing and the ObjectID namespace don't exist yet; they land in
-   Phase 5.
+   a 30s local run, no crashes (see `docs/PLAN.md` Phase 2).
+
+   **The fail-closed contract on `ContentSource` is already in place**
+   (`content::ContentSource::children`/`entry`, `src/content/mod.rs`,
+   Phase 4), ahead of anything actually feeding it attacker-controlled
+   IDs: both methods return `Option`, and every implementation (currently
+   just `FolderMirror`) is backed by `Index::children`/`entry`, which
+   return `None` on any ID not in the index — a `HashMap` lookup miss, not
+   a panic or an out-of-bounds index, no matter what string comes in. SOAP
+   body parsing and the actual object-ID *namespace* (multiple sources
+   sharing "0", prefix-routing between them) don't exist yet; they land in
+   Phase 5 and Phase 8 respectively. What's missing until then is
+   attacker reach, not the contract itself.
 
 Path resolution and Range parsing don't exist yet either — Phase 6.
 

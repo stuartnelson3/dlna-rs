@@ -149,8 +149,17 @@ the device description builder (`description.rs`, pure like the SSDP
 message builders), and static SCPD content (`scpd.rs` + `scpd/*.xml`,
 `include_str!`'d — SCPD doesn't vary at runtime, so it isn't generated).
 
-None of the `ContentSource`/`ByteSource`/`MetadataProvider` traits exist
-yet — that starts in Phase 4.
+Phase 4 adds the first of the three extension-point traits:
+`ContentSource`, defined in `content/mod.rs` with its first implementation,
+`content::folder::FolderMirror`, a 1:1 filesystem mirror. It's backed by
+two new top-level modules — `index.rs` (the in-memory tree: `ObjectId`,
+`Entry`/`Container`/`Item` as the read-only view, `IndexBuilder` as the
+only way to construct one) and `scanner.rs` (`walkdir`-based, builds an
+`Index` from the configured media directories) — kept at the top level
+rather than under `content/` because both `FolderMirror` now and
+`MusicLibraryView` later (Phase 8) read the *same* index, just presenting
+different tree shapes over it; it isn't either source's private state.
+`ByteSource` and `MetadataProvider` still don't exist — Phases 6 and 8.
 
 See [`PLAN.md`](PLAN.md) for what's next and why the phases are ordered the
 way they are.

@@ -1,7 +1,10 @@
 #![forbid(unsafe_code)]
 
 pub mod config;
+pub mod content;
 pub mod core;
+pub mod index;
+pub mod scanner;
 
 /// The seam `fuzz/` (a separate crate — see `fuzz/Cargo.toml`) reaches
 /// through to fuzz pure parsing functions. Deliberately narrow: re-export
