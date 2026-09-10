@@ -641,9 +641,17 @@ attached geiger report with no manual steps.
 
 **Goal:** confirm this actually works on real devices, then call it done.
 
-- [ ] Test against at least one real hardware renderer and one software
-      client (VLC, BubbleUPnP).
-- [ ] Verify seeking works during playback, not just that the file opens.
+- [x] Test against at least one real hardware renderer and one software
+      client (VLC, BubbleUPnP). **Verified by the user directly**, against
+      a real media server on their LAN (see Phase 8's bug 4 for how that
+      server got found in the first place): the DTS Play-Fi app's
+      built-in media server browser found `dlna-rs` over SSDP, listed its
+      library, and played back both FLAC and MP3 files.
+- [x] Verify seeking works during playback, not just that the file opens.
+      **Verified by the user**, same Play-Fi session: seeking worked, and
+      the user's own words were "was fast, and the recently added albums
+      stuff worked correctly." A 24-bit FLAC specifically was confirmed
+      streaming and seeking correctly too.
 - [ ] Finalize `docs/DESIGN.md` and `docs/THREAT_MODEL.md`.
 - [ ] Fill in the README's Building and License sections for real.
 
