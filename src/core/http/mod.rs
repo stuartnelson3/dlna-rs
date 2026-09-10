@@ -2,9 +2,14 @@
 //! and [`scpd`]. Range parsing/serving (Phase 6) and SOAP dispatch
 //! (Phase 5) extend this, not replace it.
 
-pub mod description;
-pub mod router;
-pub mod scpd;
+// Not `pub`: these are implementation details of `HttpServer` below, which
+// is the only thing outside this module that should depend on anything
+// here. `router` in particular takes `hyper::Method` in its signature —
+// keeping it crate-internal means a future hyper swap can't leak past
+// `HttpServer`'s own (hyper-free) API.
+pub(crate) mod description;
+pub(crate) mod router;
+pub(crate) mod scpd;
 
 use std::convert::Infallible;
 use std::net::{Ipv4Addr, SocketAddr};
