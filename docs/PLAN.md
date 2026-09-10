@@ -112,16 +112,60 @@ MiniDLNA instance and a hardware renderer already on the network.
 
 ## Phase 3 — Device description and SCPD
 
-**Goal:** a discovered client can read the device's capabilities.
+**Goal:** a discovered client can read the device's capabilities. Pure
+`GET`-served XML only — no SOAP. (The original draft of this phase listed
+"ConnectionManager stub actions" here; that's SOAP-invoked and needs the
+dispatch machinery Phase 5 builds, so it moved there. ConnectionManager's
+SCPD — the *description* of those actions — still belongs here.)
 
-- [ ] `/description.xml` generated from config (`friendly_name`, `uuid`).
-- [ ] SCPD XML for `ContentDirectory` and `ConnectionManager`.
-- [ ] `ConnectionManager` stub actions: `GetProtocolInfo`,
-      `GetCurrentConnectionIDs`, `GetCurrentConnectionInfo`.
-- [ ] HTTP router skeleton on `hyper` directly (no framework).
+- [ ] Add `hyper` (1.x, features `http1`+`server`), `hyper-util` (feature
+      `tokio`, for the `TokioIo` adapter — hyper 1.x dropped its own
+      server loop), `http-body-util`, and `bytes`. Server is a plain
+      accept loop (`TcpListener` + `hyper::server::conn::http1`) with a
+      hand-written `service_fn` closure — no tower, no axum, per spec.
+- [ ] `core::device`: a small module holding what both SSDP and HTTP need
+      to agree on — `ServiceType` (`ContentDirectory`/`ConnectionManager`)
+      and the device type string. Move `ServiceType` here out of
+      `core::ssdp::targets` (it's not an SSDP concept, it's a device-model
+      concept SSDP happens to consume) so SCPD routing and SSDP
+      advertising can't drift apart by each defining their own copy.
+      Also owns the URL scheme every service gets: `/{service}/scpd.xml`,
+      `/{service}/control` (Phase 5), `/{service}/event` (unimplemented —
+      not building GENA eventing for MVP; a `SUBSCRIBE` there just 404s,
+      which UPnP permits).
+- [ ] `core::http::description`: pure function building `/description.xml`
+      from config (`friendly_name`, resolved `uuid`) plus the resolved
+      interface IP/port (for the base URL) and `core::device`'s service
+      list. Manufacturer/model fields are hardcoded constants (`dlna-rs`,
+      repo URL, `CARGO_PKG_VERSION`) — not configurable; nobody asked for
+      that knob. No `presentationURL` — there's no web UI to point at.
+- [ ] `core::http::scpd`: **static** XML for `ContentDirectory` and
+      `ConnectionManager` (matches the spec's own wording — SCPD content
+      doesn't vary at runtime, so it's `include_str!`'d constants, not
+      generated). Publish the standard, spec-complete SCPD for both
+      service types, listing every action UPnP defines for them — not
+      just the ones Phase 5 implements. That's what a compliant device
+      does: SCPD says what's *knowable*, dispatch decides what's
+      *implemented*, and unimplemented-but-declared actions get a SOAP
+      fault (§5), not silence.
+- [ ] `core::http::router`: `fn route(method, path) -> Route` as a plain,
+      synchronous, unit-testable match — `Route::DeviceDescription`,
+      `Route::Scpd(ServiceType)`, `Route::NotFound`. The async handler is
+      a thin `match` on top of this pure decision. Sets the shape Phases 5
+      and 6 extend (more routes, not a different pattern).
+- [ ] Wire the HTTP server into `main.rs`: bind on the resolved interface
+      IP (not `0.0.0.0` — matches the LAN-only, one-configured-interface
+      model), spawn alongside the SSDP tasks, same abort-on-shutdown
+      treatment.
+- [ ] `tests/integration.rs`: add `reqwest` as a dev-dependency (per the
+      spec's testing strategy), bind the server on an ephemeral
+      `127.0.0.1` port, `GET` all three URLs, assert `200`, the right
+      `Content-Type`, and that the body parses as XML.
 
 **Exit criterion:** `curl` against `/description.xml` and both SCPD URLs
-returns well-formed XML matching the UPnP device/service schema.
+returns well-formed XML matching the UPnP device/service schema —
+confirmed both by the integration test and by hand against a running
+instance.
 
 ---
 
@@ -149,9 +193,13 @@ directory tree exactly after a scan.
 
 - [ ] SOAP envelope parsing with `quick-xml`, bounded body size (reject
       oversized bodies before parsing).
-- [ ] `dispatch.rs`: routes `Browse`, `GetSearchCapabilities`,
-      `GetSortCapabilities`, `GetSystemUpdateID`; a proper SOAP fault
-      (`Invalid Action`) for everything else.
+- [ ] `dispatch.rs`: routes ContentDirectory's `Browse`,
+      `GetSearchCapabilities`, `GetSortCapabilities`, `GetSystemUpdateID`,
+      plus ConnectionManager's `GetProtocolInfo`,
+      `GetCurrentConnectionIDs`, `GetCurrentConnectionInfo` (moved from
+      Phase 3 — these needed this same dispatch mechanism, not a
+      one-off); a proper SOAP fault (`Invalid Action`) for everything
+      else on both services.
 - [ ] `didl.rs`: `MediaContainer`/`MediaItem` model, DIDL-Lite XML
       generation, `protocolInfo` builder.
 - [ ] Golden-file tests for `protocolInfo`/DIDL-Lite per format: FLAC, MP3,
