@@ -14,5 +14,6 @@ pub mod scanner;
 /// encapsulation guidance for why this exists.
 #[doc(hidden)]
 pub mod fuzz_support {
+    pub use crate::core::soap::parse_action as parse_soap_action;
     pub use crate::core::ssdp::message::parse_search_request;
 }

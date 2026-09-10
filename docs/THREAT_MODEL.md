@@ -49,17 +49,29 @@ LAN attacker can actually hit.
    input. Fuzzed with `fuzz/fuzz_targets/ssdp_parse.rs` — 31M executions in
    a 30s local run, no crashes (see `docs/PLAN.md` Phase 2).
 
-   **The fail-closed contract on `ContentSource` is already in place**
-   (`content::ContentSource::children`/`entry`, `src/content/mod.rs`,
-   Phase 4), ahead of anything actually feeding it attacker-controlled
-   IDs: both methods return `Option`, and every implementation (currently
-   just `FolderMirror`) is backed by `Index::children`/`entry`, which
-   return `None` on any ID not in the index — a `HashMap` lookup miss, not
-   a panic or an out-of-bounds index, no matter what string comes in. SOAP
-   body parsing and the actual object-ID *namespace* (multiple sources
-   sharing "0", prefix-routing between them) don't exist yet; they land in
-   Phase 5 and Phase 8 respectively. What's missing until then is
-   attacker reach, not the contract itself.
+   **SOAP body parsing is implemented** (`src/core/soap.rs`,
+   `parse_action`): an 8KB size cap checked twice — against the declared
+   `Content-Length` before the body is even read (`core::http`), and
+   again inside the parser itself, so a client that lies about
+   `Content-Length` still can't get past the second check. Every XML
+   operation returns `Result`/`Option`; the worst a hostile body can
+   produce is a parse error or (for pathologically-nested-but-well-formed
+   XML) a semantically wrong `SoapAction`, never a panic. Fuzzed with
+   `fuzz/fuzz_targets/soap_parse.rs` — 3.4M executions in a 30s local run,
+   no crashes.
+
+   **The fail-closed contract on `ContentSource` is now attacker-reachable
+   for real**, via `core::dispatch::browse` (Phase 5): a Browse request's
+   `ObjectID` argument — arbitrary attacker-controlled text — becomes an
+   `ObjectId` through `ObjectId::new`, which can't fail (it's just an
+   opaque string wrapper), and is only checked for validity by the
+   `ContentSource::children`/`entry` lookup, which returns `None` (mapped
+   to UPnP fault 701 "No Such Object," not a panic or an out-of-bounds
+   index) for anything not actually in the index. The object-ID
+   *namespace* (multiple sources sharing "0", prefix-routing between them)
+   still doesn't exist — that's Phase 8, and per `docs/DESIGN.md` it's
+   `CompositeContentSource`'s job specifically, not something individual
+   sources like `FolderMirror` need to know about.
 
 Path resolution and Range parsing don't exist yet either — Phase 6.
 

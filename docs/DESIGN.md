@@ -150,15 +150,37 @@ message builders), and static SCPD content (`scpd.rs` + `scpd/*.xml`,
 `include_str!`'d — SCPD doesn't vary at runtime, so it isn't generated).
 
 Phase 4 adds the first of the three extension-point traits:
-`ContentSource`, defined in `content/mod.rs` with its first implementation,
-`content::folder::FolderMirror`, a 1:1 filesystem mirror. It's backed by
-two new top-level modules — `index.rs` (the in-memory tree: `ObjectId`,
-`Entry`/`Container`/`Item` as the read-only view, `IndexBuilder` as the
-only way to construct one) and `scanner.rs` (`walkdir`-based, builds an
-`Index` from the configured media directories) — kept at the top level
-rather than under `content/` because both `FolderMirror` now and
-`MusicLibraryView` later (Phase 8) read the *same* index, just presenting
-different tree shapes over it; it isn't either source's private state.
+`ContentSource`, with its first implementation, `content::folder::FolderMirror`,
+a 1:1 filesystem mirror. It's backed by two new top-level modules —
+`index.rs` (the in-memory tree: `ObjectId`, `Entry`/`Container`/`Item` as
+the read-only view, `IndexBuilder` as the only way to construct one) and
+`scanner.rs` (`walkdir`-based, builds an `Index` from the configured media
+directories) — kept at the top level rather than under `content/` because
+both `FolderMirror` now and `MusicLibraryView` later (Phase 8) read the
+*same* index, just presenting different tree shapes over it; it isn't
+either source's private state.
+
+Phase 5 wires that trait up to real SOAP requests: `core::soap` (envelope
+parsing/building), `core::dispatch` (routes an action to a handler,
+returns a response or fault envelope), and `core::didl` (renders
+`index::Entry` as DIDL-Lite XML, plus the per-format `protocolInfo` table).
+`ContentSource` itself moved to `core::content_source` — Phase 4 had
+followed the spec's file-tree sketch and defined it in `content/mod.rs`,
+which turned out to directly contradict the spec's own prose ("the traits
+[live in] core... implementations depend on core, never the reverse").
+That contradiction was harmless while nothing in `core` needed the trait
+yet; `core::dispatch` needing to call through it is what would have made
+the wrong dependency direction permanent, so it got fixed first. `Http-
+Server::bind` takes `impl ContentSource` (generic, not `Arc<dyn
+ContentSource>`) specifically so that `main.rs` and `tests/integration.rs`
+— separate crates from the library, since a package with both a lib and a
+bin target compiles them separately — never need to import `ContentSource`
+at all; they just pass a `FolderMirror` and the type-erasure to `Arc<dyn
+ContentSource>` happens inside `bind`. That's what let `content_source`
+(and `didl`, `dispatch`, `soap`, and `device`, once the same grep-for-
+external-use check was actually applied to them) stay `pub(crate)` instead
+of `pub` — see the encapsulation guidance below.
+
 `ByteSource` and `MetadataProvider` still don't exist — Phases 6 and 8.
 
 See [`PLAN.md`](PLAN.md) for what's next and why the phases are ordered the

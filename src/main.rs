@@ -4,9 +4,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use dlna_rs::config::Config;
+use dlna_rs::content::folder::FolderMirror;
 use dlna_rs::core::http::HttpServer;
 use dlna_rs::core::net;
 use dlna_rs::core::ssdp::Ssdp;
+use dlna_rs::scanner;
 use uuid::Uuid;
 
 struct Args {
@@ -142,11 +144,16 @@ async fn main() -> ExitCode {
         }
     };
 
+    let index = scanner::scan(&config.media);
+    log::info!("scanned media directories: {} entries indexed", index.len());
+    let content_source = FolderMirror::new(index);
+
     let http = match HttpServer::bind(
         interface_addr,
         config.server.port,
         config.server.friendly_name.clone(),
         uuid,
+        content_source,
     )
     .await
     {

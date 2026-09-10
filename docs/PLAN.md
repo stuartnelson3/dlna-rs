@@ -227,23 +227,63 @@ audio files, correctly nested, with the image and dotfile excluded.
 
 **Goal:** a real client can Browse the tree and get correct XML back.
 
-- [ ] SOAP envelope parsing with `quick-xml`, bounded body size (reject
-      oversized bodies before parsing).
-- [ ] `dispatch.rs`: routes ContentDirectory's `Browse`,
+- [x] **Fixed a real architecture bug before writing any dispatch code.**
+      The private planning spec contradicts itself: its prose says trait
+      definitions belong in `core` so `core` never depends on
+      `content`/`transform`/`metadata` ("implementations depend on core,
+      never the reverse... that's what actually buys the flexibility"),
+      but its file-tree sketch annotates `content/mod.rs` as where
+      `ContentSource` lives — which is what Phase 4 followed. Moved the
+      trait to `core::content_source` before `core::dispatch` could make
+      the wrong-direction dependency permanent; `content::folder` now
+      depends on `core`, not the other way around.
+- [x] SOAP envelope parsing (`core::soap`, `quick-xml`), bounded to 8KB,
+      checked against `Content-Length` before the body is even read
+      (`core::http`) and enforced again in the parser itself. Deliberately
+      syntactic rather than fully namespace-aware — `local_name()` strips
+      whatever prefix a client's SOAP toolkit chose (`s:`, `SOAP-ENV:`,
+      no prefix at all all resolve the same way), and *which* service is
+      being invoked comes from the HTTP route, not from re-deriving it out
+      of the body's declared namespace.
+- [x] `core::dispatch`: routes ContentDirectory's `Browse`,
       `GetSearchCapabilities`, `GetSortCapabilities`, `GetSystemUpdateID`,
       plus ConnectionManager's `GetProtocolInfo`,
       `GetCurrentConnectionIDs`, `GetCurrentConnectionInfo` (moved from
-      Phase 3 — these needed this same dispatch mechanism, not a
-      one-off); a proper SOAP fault (`Invalid Action`) for everything
-      else on both services.
-- [ ] `didl.rs`: `MediaContainer`/`MediaItem` model, DIDL-Lite XML
-      generation, `protocolInfo` builder.
-- [ ] Golden-file tests for `protocolInfo`/DIDL-Lite per format: FLAC, MP3,
-      MP4/AAC, MKV, JPEG.
-- [ ] `fuzz/fuzz_targets/soap_parse.rs`.
+      Phase 3); a proper SOAP fault (`Invalid Action`, code 401) for
+      everything else on both services. `Browse` also honors
+      `StartingIndex`/`RequestedCount` pagination (a real, well-scoped
+      addition beyond the original task list — large libraries need it,
+      unlike `Search`) and returns `NoSuchObject` (701) for an unknown
+      `ObjectID`, `InvalidArgs` (402) for a missing/malformed argument.
+- [x] `core::didl`: renders `index::Entry` directly as DIDL-Lite XML —
+      no separate `MediaContainer`/`MediaItem` struct hierarchy, since
+      `Entry` already carries everything a `<container>`/`<item>` element
+      needs and a second shape would just be mapping boilerplate.
+      `core::didl::format` is the one canonical audio-format table,
+      shared with `scanner` (which now calls it instead of keeping its
+      own extension list) so "what counts as audio" and "what's this
+      format's protocolInfo" can't drift apart.
+- [x] **Correction to this task as originally planned**: golden-file tests
+      per FLAC/MP3/MP4/AAC/MKV/JPEG made no sense for an audio-only server
+      that never scans video or images — that list was inherited from a
+      generic DLNA-server template. Wrote inline-assertion tests (a
+      literal expected string is a "golden file" too, just not a separate
+      fixture, and these are short enough that a separate file would be
+      pure ceremony) for the formats `scanner` actually recognizes: MP3
+      (the one format that gets `DLNA.ORG_PN` — see `core::didl::format`'s
+      doc comment for why the others deliberately don't), FLAC, M4A, OGG,
+      WAV.
+- [x] `fuzz/fuzz_targets/soap_parse.rs` — run for real (3.4M execs / 30s
+      local run, no crashes), not just scaffolded, via the `fuzz_support`
+      seam from `docs/DESIGN.md`'s encapsulation guidance.
 
 **Exit criterion:** `BrowseDirectChildren` and `BrowseMetadata` against
-`FolderMirror` on a fixture tree return DIDL-Lite matching the golden files.
+`FolderMirror` on a fixture tree return correct DIDL-Lite — verified by
+`tests/integration.rs` driving the real HTTP server end-to-end (a two-hop
+Browse: root → album → item metadata) and by hand against a real running
+instance on the LAN (`curl` with a real SOAP body; `Browse`,
+`GetSystemUpdateID`, and an unimplemented `Search` action all behaved
+exactly as designed, including the 500-with-SOAP-fault response).
 
 ---
 

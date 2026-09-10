@@ -19,3 +19,10 @@ path = "fuzz_targets/ssdp_parse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "soap_parse"
+path = "fuzz_targets/soap_parse.rs"
+test = false
+doc = false
+bench = false

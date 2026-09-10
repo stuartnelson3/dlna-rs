@@ -21,6 +21,17 @@ use std::time::SystemTime;
 pub struct ObjectId(String);
 
 impl ObjectId {
+    /// Wraps any string as an `ObjectId` — always succeeds, because
+    /// construction never fails: an `ObjectId` is just an opaque key, and
+    /// whether it actually names anything is a lookup question
+    /// (`Index::entry`/`children` returning `None`), not a construction
+    /// question. This is the constructor a Browse request's
+    /// attacker-supplied `ObjectID` argument goes through — see
+    /// docs/THREAT_MODEL.md.
+    pub fn new(raw: impl Into<String>) -> ObjectId {
+        ObjectId(raw.into())
+    }
+
     /// Reserved by the UPnP ContentDirectory spec: browsing this ID means
     /// "the root of the tree."
     pub fn root() -> ObjectId {

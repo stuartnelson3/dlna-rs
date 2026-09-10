@@ -2,7 +2,7 @@
 //! The true minimal baseline `ContentSource` — no grouping, no
 //! heuristics, just what's on disk.
 
-use crate::content::ContentSource;
+use crate::core::content_source::ContentSource;
 use crate::index::{Entry, Index, ObjectId};
 
 pub struct FolderMirror {

@@ -10,11 +10,8 @@ use std::time::SystemTime;
 use walkdir::WalkDir;
 
 use crate::config::MediaConfig;
+use crate::core::didl::format::is_audio_extension;
 use crate::index::{Index, IndexBuilder, ObjectId};
-
-const AUDIO_EXTENSIONS: &[&str] = &[
-    "mp3", "flac", "m4a", "mp4", "aac", "ogg", "oga", "opus", "wav", "wma", "ape", "wv",
-];
 
 pub fn scan(media: &MediaConfig) -> Index {
     let mut builder = IndexBuilder::new();
@@ -69,7 +66,7 @@ fn scan_one_directory(
             let id = builder.add_container(&parent, title);
             container_at_depth.truncate(depth);
             container_at_depth.push(id);
-        } else if entry.file_type().is_file() && is_audio_file(entry.path()) {
+        } else if entry.file_type().is_file() && is_audio_extension(entry.path()) {
             if let Ok(metadata) = entry.metadata() {
                 builder.add_item(
                     &parent,
@@ -87,16 +84,6 @@ fn scan_one_directory(
         // scanner's job is to find the audio, not to complain about the
         // rest.
     }
-}
-
-fn is_audio_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| {
-            AUDIO_EXTENSIONS
-                .iter()
-                .any(|known| known.eq_ignore_ascii_case(ext))
-        })
 }
 
 fn is_excluded(entry: &walkdir::DirEntry, patterns: &[String]) -> bool {
