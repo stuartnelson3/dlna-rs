@@ -259,9 +259,67 @@ impl Default for IndexBuilder {
     }
 }
 
+/// A shared, swappable [`Index`] — cheap to clone (an `Arc` underneath),
+/// so every `ContentSource` that reads through the same media directories
+/// can hold its own clone and all see the same data, including after a
+/// rescan (`rescan::run`) replaces it wholesale. Today that's just
+/// `FolderMirror`; per the spec, Phase 8's `MusicLibraryView` "queries the
+/// same underlying Index `FolderMirror` reads from" — this is that shared
+/// resource, not something private to `FolderMirror`.
+#[derive(Clone)]
+pub struct SharedIndex(std::sync::Arc<std::sync::RwLock<Index>>);
+
+impl SharedIndex {
+    pub fn new(index: Index) -> SharedIndex {
+        SharedIndex(std::sync::Arc::new(std::sync::RwLock::new(index)))
+    }
+
+    /// Replaces the whole index. A full rebuild-and-swap, not an
+    /// incremental patch — matches "MVP: in-memory index, rebuilt on
+    /// scan," so there's no diffing logic to get subtly wrong. Object IDs
+    /// are reassigned each call as a result; see docs/DESIGN.md for why
+    /// that's an accepted MVP tradeoff.
+    pub fn replace(&self, index: Index) {
+        *self.0.write().expect("index lock poisoned") = index;
+    }
+
+    pub fn children(&self, id: &ObjectId) -> Option<Vec<Entry>> {
+        self.0.read().expect("index lock poisoned").children(id)
+    }
+
+    pub fn entry(&self, id: &ObjectId) -> Option<Entry> {
+        self.0.read().expect("index lock poisoned").entry(id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_index_replace_changes_what_subsequent_reads_see() {
+        let shared = SharedIndex::new(IndexBuilder::new().build());
+        assert_eq!(shared.children(&ObjectId::root()), Some(Vec::new()));
+
+        let mut builder = IndexBuilder::new();
+        builder.add_container(&ObjectId::root(), "New".to_string());
+        shared.replace(builder.build());
+
+        assert_eq!(shared.children(&ObjectId::root()).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn shared_index_clones_share_the_same_underlying_index() {
+        let shared = SharedIndex::new(IndexBuilder::new().build());
+        let handle = shared.clone();
+
+        let mut builder = IndexBuilder::new();
+        builder.add_container(&ObjectId::root(), "New".to_string());
+        shared.replace(builder.build());
+
+        // The clone sees the replacement too - they're the same storage.
+        assert_eq!(handle.children(&ObjectId::root()).unwrap().len(), 1);
+    }
 
     #[test]
     fn root_starts_as_an_empty_container() {

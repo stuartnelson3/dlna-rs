@@ -8,9 +8,10 @@ use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+use dlna_rs::config::{MediaConfig, MediaDirectory, MediaKind};
 use dlna_rs::content::folder::FolderMirror;
 use dlna_rs::core::http::HttpServer;
-use dlna_rs::index::{IndexBuilder, ObjectId};
+use dlna_rs::index::{IndexBuilder, ObjectId, SharedIndex};
 use dlna_rs::transform::passthrough::PassthroughSource;
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -38,7 +39,7 @@ fn fixture_media_dir() -> (TempDir, FolderMirror, PathBuf) {
     );
     (
         dir,
-        FolderMirror::new(builder.build()),
+        FolderMirror::new(SharedIndex::new(builder.build())),
         dir_path_of(&track_path),
     )
 }
@@ -393,4 +394,93 @@ fn extract_attr(soap_body: &str, tag: &str, attribute: &str) -> String {
         + needle.len();
     let end = unescaped[start..].find('"').unwrap();
     unescaped[start..start + end].to_string()
+}
+
+/// A separate, self-contained fixture for the rescan test - uses the real
+/// scanner (not a hand-built index like the other tests here) since this
+/// test is specifically about the scan -> SharedIndex::replace pipeline,
+/// not about Browse/DIDL correctness in isolation.
+async fn start_server_with_rescan(
+    interval: std::time::Duration,
+) -> (
+    String,
+    TempDir,
+    tokio::task::JoinHandle<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("01 - Track.mp3"), TRACK_CONTENT).unwrap();
+
+    let media = MediaConfig {
+        directories: vec![MediaDirectory {
+            path: dir.path().to_path_buf(),
+            kind: MediaKind::Audio,
+        }],
+        follow_symlinks: false,
+        exclude_patterns: vec![],
+    };
+    let shared_index = SharedIndex::new(dlna_rs::scanner::scan(&media));
+    let content_source = FolderMirror::new(shared_index.clone());
+
+    let server = HttpServer::bind(
+        Ipv4Addr::LOCALHOST,
+        0,
+        "rescan-test".to_string(),
+        Uuid::parse_str("22222222-3333-4444-5555-666666666666").unwrap(),
+        content_source,
+        PassthroughSource,
+        vec![dir.path().to_path_buf()],
+    )
+    .await
+    .expect("failed to bind test HTTP server");
+    let addr = server.local_addr().unwrap();
+    let http_handle = tokio::spawn(server.serve());
+    // on_startup=false: the fixture's initial scan above already covers
+    // "on_startup=true" (Phase 1's own config option); this test is
+    // specifically about the periodic re-scan.
+    let rescan_handle = tokio::spawn(dlna_rs::rescan::run(media, shared_index, interval, false));
+    (format!("http://{addr}"), dir, http_handle, rescan_handle)
+}
+
+async fn browse_didl(base: &str, object_id: &str) -> String {
+    let client = reqwest::Client::new();
+    let text = client
+        .post(format!("{base}/ContentDirectory/control"))
+        .body(browse_request_body(object_id, "BrowseDirectChildren"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&amp;", "&")
+}
+
+#[tokio::test]
+async fn new_file_appears_after_one_rescan_interval_with_no_restart() {
+    let interval = std::time::Duration::from_millis(50);
+    let (base, dir, _http, _rescan) = start_server_with_rescan(interval).await;
+
+    // The scanner mounts the one configured directory as its own
+    // top-level container (named after its basename), so the files
+    // themselves are one level below root, not direct children of "0".
+    let root_didl = browse_didl(&base, "0").await;
+    let media_dir_id = extract_attr(&root_didl, "container", "id");
+
+    let before = browse_didl(&base, &media_dir_id).await;
+    assert!(before.contains("01 - Track.mp3"));
+    assert!(!before.contains("02 - New Track.mp3"));
+
+    // Add a file after the server (and rescan timer) are already running -
+    // this is the "no restart needed" part of the exit criterion.
+    std::fs::write(dir.path().join("02 - New Track.mp3"), b"more content").unwrap();
+
+    tokio::time::sleep(interval * 4).await;
+
+    let after = browse_didl(&base, &media_dir_id).await;
+    assert!(after.contains("01 - Track.mp3"));
+    assert!(after.contains("02 - New Track.mp3"));
 }

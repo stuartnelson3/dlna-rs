@@ -15,9 +15,7 @@ pub struct Config {
     #[serde(default)]
     #[allow(dead_code)]
     pub library: LibraryConfig,
-    // Read by the rescan timer loop (Phase 7).
     #[serde(default)]
-    #[allow(dead_code)]
     pub rescan: RescanConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
@@ -60,10 +58,8 @@ impl Default for SsdpConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-// follow_symlinks/exclude_patterns are read by the scanner in Phase 4.
-#[allow(dead_code)]
 pub struct MediaConfig {
     pub directories: Vec<MediaDirectory>,
     #[serde(default)]
@@ -72,16 +68,14 @@ pub struct MediaConfig {
     pub exclude_patterns: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-// Read by the scanner/FolderMirror ContentSource starting in Phase 4.
-#[allow(dead_code)]
 pub struct MediaDirectory {
     pub path: PathBuf,
     pub kind: MediaKind,
 }
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MediaKind {
     Audio,

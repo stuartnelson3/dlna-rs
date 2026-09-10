@@ -8,7 +8,8 @@ use dlna_rs::content::folder::FolderMirror;
 use dlna_rs::core::http::HttpServer;
 use dlna_rs::core::net;
 use dlna_rs::core::ssdp::Ssdp;
-use dlna_rs::scanner;
+use dlna_rs::index::{IndexBuilder, SharedIndex};
+use dlna_rs::rescan;
 use dlna_rs::transform::passthrough::PassthroughSource;
 use uuid::Uuid;
 
@@ -145,9 +146,14 @@ async fn main() -> ExitCode {
         }
     };
 
-    let index = scanner::scan(&config.media);
-    log::info!("scanned media directories: {} entries indexed", index.len());
-    let content_source = FolderMirror::new(index);
+    // Starts empty and bound to the HTTP server immediately, rather than
+    // blocking startup on the first scan - SSDP/description.xml become
+    // reachable right away, and the rescan task (spawned below) populates
+    // the library moments later. `shared_index` stays with main() so the
+    // rescan task can keep replacing it after `content_source` has moved
+    // into HttpServer.
+    let shared_index = SharedIndex::new(IndexBuilder::new().build());
+    let content_source = FolderMirror::new(shared_index.clone());
 
     let media_roots = config
         .media
@@ -191,12 +197,19 @@ async fn main() -> ExitCode {
         async move { ssdp.announce_alive_periodically(interval).await }
     });
     let http_server = tokio::spawn(http.serve());
+    let rescanner = tokio::spawn(rescan::run(
+        config.media.clone(),
+        shared_index,
+        config.rescan.interval,
+        config.rescan.on_startup,
+    ));
 
     wait_for_shutdown().await;
 
     responder.abort();
     announcer.abort();
     http_server.abort();
+    rescanner.abort();
     ssdp.announce_byebye().await;
     log::info!("sent ssdp:byebye, exiting");
 

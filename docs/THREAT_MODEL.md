@@ -123,3 +123,9 @@ reading does land, it goes through a pure-Rust, `forbid(unsafe_code)`,
 already-heavily-fuzzed library (`symphonia`), not hand-rolled binary
 parsing. Until then, the server's attacker-reachable parsing surface is
 deliberately narrow: network input only, the three paths above.
+
+The Phase 7 rescan timer doesn't change this. It re-walks the *configured*
+media directories on a schedule — config-provenance paths the operator
+chose, not anything derived from network input — using the same scanner
+code path as the initial scan. No new attacker-reachable surface, per the
+spec's own reasoning for choosing a timer over inotify.

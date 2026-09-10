@@ -201,6 +201,22 @@ and what got built instead.
 
 `MetadataProvider` still doesn't exist — Phase 8.
 
+Phase 7 makes the index a *live* thing instead of a value computed once at
+startup: `index::SharedIndex` (an `Arc<RwLock<Index>>` handle) and
+`rescan.rs` (a sleep-then-scan loop, each scan on a blocking thread pool
+task so directory walking never stalls the async runtime). The design
+choice worth calling out: `SharedIndex` isn't private state inside
+`FolderMirror` — it's its own type specifically so Phase 8's
+`MusicLibraryView`, which the spec says "queries the same underlying
+Index `FolderMirror` reads from," can hold a clone of the exact same
+handle. A rescan replacing the index updates every `ContentSource`
+reading through a clone of it, automatically — nothing to separately
+invalidate. `main.rs` also changed shape here: it now binds HTTP/SSDP
+with an empty index and starts serving immediately, and the rescan task
+(spawned right after) does the real populate — SSDP/`description.xml`
+answer right away rather than waiting on a first scan that could be slow
+for a large library.
+
 See [`PLAN.md`](PLAN.md) for what's next and why the phases are ordered the
 way they are.
 

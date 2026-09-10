@@ -378,14 +378,55 @@ reproducibly. Run it with `cargo run --example verify_item_playback --
 
 **Goal:** new files show up without a restart.
 
-- [ ] `tokio::time::interval` loop: re-walk configured directories on
-      `rescan.interval`, diff against the index, update in place.
-- [ ] `rescan.on_startup` config option.
-- [ ] Rescan invalidates/recomputes the live-computed views from Phase 8
-      (once that phase exists) rather than leaving them stale.
+- [x] `src/rescan.rs`: `tokio::time::sleep`-based loop (not literally
+      `tokio::time::interval` — a plain sleep-then-scan loop is simpler
+      for "do a bounded-time operation, then wait" and doesn't accumulate
+      missed ticks the way `interval` does if a scan ever runs long).
+      Each scan runs on `tokio::task::spawn_blocking`, since directory
+      walking is real filesystem I/O that shouldn't stall the async
+      runtime. Rather than "diff against the index, update in place," a
+      full rescan rebuilds the whole `Index` from scratch and swaps it in
+      wholesale — matches "MVP: in-memory index, rebuilt on scan" from
+      the private planning notes, and means no incremental-diff logic to
+      get subtly wrong. Object IDs are reassigned each rescan as a
+      result; nothing depends on an ID staying stable across rescans
+      (every Browse is a fresh round-trip), so this is an accepted
+      tradeoff, not an oversight.
+- [x] `rescan.on_startup` config option — genuinely wired now, not just
+      parsed. **Real design decision made here**: the server binds
+      HTTP/SSDP with an *empty* index immediately, then the rescan task
+      (spawned right after) does the first populate — rather than
+      blocking startup on a scan before the server starts listening.
+      SSDP/`description.xml` become reachable immediately; the library
+      fills in moments later. `on_startup=false` means exactly what it
+      says: the library stays empty until the first scheduled interval,
+      which could be hours away on the default 4h cadence — that's the
+      config option's actual purpose (skip a potentially-slow scan
+      blocking startup), not a bug.
+- [x] `index::SharedIndex` (new): a cheap-to-clone (`Arc<RwLock<Index>>`
+      underneath) handle that `rescan::run` replaces wholesale and any
+      `ContentSource` reading through a clone of the same handle sees
+      immediately. Added deliberately at this layer rather than inside
+      `FolderMirror` alone: the spec's own words for Phase 8's
+      `MusicLibraryView` are "queries the *same* underlying Index
+      `FolderMirror` reads from" — meaning the index has to be a shared
+      resource multiple `ContentSource`s hold a handle to, not
+      `FolderMirror`'s private state. Getting this right now avoids
+      Phase 8 needing to redesign it. (This is the "Rescan invalidates/
+      recomputes the live-computed views from Phase 8" bullet from the
+      original task list — there's nothing extra to invalidate once the
+      views themselves read live off the same `SharedIndex`, which is
+      exactly the point of building it this way.)
 
 **Exit criterion:** a file added to the media directory appears in Browse
-results after one rescan interval, with no restart.
+results after one rescan interval, with no restart — verified three ways:
+`rescan::run`'s own unit tests (on_startup timing, a real scan replacing a
+`SharedIndex`); `tests/integration.rs`'s
+`new_file_appears_after_one_rescan_interval_with_no_restart` (real HTTP
+server, 50ms interval, a file written to disk mid-test, Browse before and
+after); and by hand against a real running instance — 6 real MP3s, a 3s
+interval, added a 7th file, waited 5s, `NumberReturned` went from 6 to 7
+with the new file present, server never restarted.
 
 ---
 

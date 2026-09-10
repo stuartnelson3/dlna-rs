@@ -216,7 +216,7 @@ fn arg<'a>(action: &'a soap::SoapAction, name: &str) -> Result<&'a str, Dispatch
 mod tests {
     use super::*;
     use crate::content::folder::FolderMirror;
-    use crate::index::IndexBuilder;
+    use crate::index::{IndexBuilder, SharedIndex};
     use std::path::PathBuf;
     use std::time::SystemTime;
 
@@ -247,7 +247,7 @@ mod tests {
             200,
             SystemTime::UNIX_EPOCH,
         );
-        FolderMirror::new(builder.build())
+        FolderMirror::new(SharedIndex::new(builder.build()))
     }
 
     #[test]
