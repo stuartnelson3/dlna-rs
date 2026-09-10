@@ -55,26 +55,42 @@ pub fn is_audio_extension(path: &Path) -> bool {
         .is_some_and(|ext| for_extension(ext).is_some())
 }
 
-/// The `protocolInfo` value for a `<res>` element, per the format table
-/// above. Falls back to a generic, profile-free value for an extension
-/// the table doesn't recognize rather than panicking — `scanner` should
-/// never hand this an unrecognized extension in practice (it filters on
-/// the same table), but this function makes no assumption about its
-/// caller.
-pub fn protocol_info(path: &Path) -> String {
-    let format = path
+/// The MIME type for the `Content-Type` header (Phase 6) as well as the
+/// `protocolInfo`/`contentFeatures.dlna.org` values below. Falls back to a
+/// generic value for an unrecognized extension rather than panicking —
+/// `scanner` should never hand this an extension outside the table in
+/// practice (it filters on the same table via `is_audio_extension`), but
+/// none of these functions assume that of their caller.
+pub fn mime_for(path: &Path) -> &'static str {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .and_then(for_extension)
+        .map_or("application/octet-stream", |f| f.mime)
+}
+
+/// The DLNA-specific portion of `protocolInfo` — also used verbatim as
+/// the `contentFeatures.dlna.org` response header (Phase 6), which is
+/// this same value without the `http-get:*:<mime>:` prefix `protocolInfo`
+/// itself needs.
+pub fn dlna_content_features(path: &Path) -> String {
+    let profile = path
         .extension()
         .and_then(|ext| ext.to_str())
-        .and_then(for_extension);
-    let mime = format
-        .as_ref()
-        .map_or("application/octet-stream", |f| f.mime);
-    match format.as_ref().and_then(|f| f.dlna_profile) {
-        Some(pn) => {
-            format!("http-get:*:{mime}:DLNA.ORG_PN={pn};DLNA.ORG_OP=01;DLNA.ORG_FLAGS={DLNA_FLAGS}")
-        }
-        None => format!("http-get:*:{mime}:DLNA.ORG_OP=01;DLNA.ORG_FLAGS={DLNA_FLAGS}"),
+        .and_then(for_extension)
+        .and_then(|f| f.dlna_profile);
+    match profile {
+        Some(pn) => format!("DLNA.ORG_PN={pn};DLNA.ORG_OP=01;DLNA.ORG_FLAGS={DLNA_FLAGS}"),
+        None => format!("DLNA.ORG_OP=01;DLNA.ORG_FLAGS={DLNA_FLAGS}"),
     }
+}
+
+/// The `protocolInfo` value for a `<res>` element.
+pub fn protocol_info(path: &Path) -> String {
+    format!(
+        "http-get:*:{}:{}",
+        mime_for(path),
+        dlna_content_features(path)
+    )
 }
 
 #[cfg(test)]
@@ -139,6 +155,23 @@ mod tests {
         assert_eq!(
             protocol_info_for("track.xyz"),
             "http-get:*:application/octet-stream:DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000"
+        );
+    }
+
+    #[test]
+    fn mime_for_matches_the_protocol_info_mime() {
+        assert_eq!(mime_for(&PathBuf::from("track.mp3")), "audio/mpeg");
+        assert_eq!(mime_for(&PathBuf::from("track.flac")), "audio/flac");
+    }
+
+    #[test]
+    fn dlna_content_features_is_protocol_info_without_the_prefix() {
+        let path = PathBuf::from("track.mp3");
+        let expected_suffix = dlna_content_features(&path);
+        assert!(protocol_info(&path).ends_with(&expected_suffix));
+        assert_eq!(
+            expected_suffix,
+            "DLNA.ORG_PN=MP3;DLNA.ORG_OP=01;DLNA.ORG_FLAGS=01700000000000000000000000000000"
         );
     }
 

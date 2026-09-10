@@ -6,19 +6,22 @@
 use hyper::Method;
 
 use crate::core::device::ServiceType;
+use crate::index::ObjectId;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Route {
     DeviceDescription,
     Scpd(ServiceType),
     Control(ServiceType),
+    Item(ObjectId),
     NotFound,
 }
 
 pub fn route(method: &Method, path: &str) -> Route {
     match *method {
         Method::GET if path == "/description.xml" => Route::DeviceDescription,
-        Method::GET => scpd_route(path),
+        Method::GET => item_route(path).unwrap_or_else(|| scpd_route(path)),
+        Method::HEAD => item_route(path).unwrap_or(Route::NotFound),
         Method::POST => control_route(path),
         _ => Route::NotFound,
     }
@@ -36,6 +39,26 @@ fn control_route(path: &str) -> Route {
         .into_iter()
         .find(|service| path == service.control_path())
         .map_or(Route::NotFound, Route::Control)
+}
+
+fn item_route(path: &str) -> Option<Route> {
+    parse_item_path(path).map(|id| Route::Item(ObjectId::new(id)))
+}
+
+/// Parses `/item/{id}` request paths. Pure and total (never panics on any
+/// input) — this is the one place raw, attacker-controlled request-path
+/// text gets turned into something used for a lookup, so it's fuzzed
+/// (`fuzz/fuzz_targets/path_resolve.rs`) even though, per
+/// docs/THREAT_MODEL.md, our opaque-`ObjectId` URL scheme means the
+/// result never becomes a filesystem path directly — only ever an index
+/// lookup key, which fails closed on anything that doesn't match a real
+/// entry.
+pub fn parse_item_path(path: &str) -> Option<&str> {
+    let id = path.strip_prefix("/item/")?;
+    if id.is_empty() || id.contains('/') {
+        return None;
+    }
+    Some(id)
 }
 
 #[cfg(test)]
@@ -87,6 +110,50 @@ mod tests {
                 route(&Method::GET, &service.control_path()),
                 Route::NotFound
             );
+        }
+    }
+
+    #[test]
+    fn routes_get_and_head_on_an_item_path() {
+        assert_eq!(
+            route(&Method::GET, "/item/42"),
+            Route::Item(ObjectId::new("42"))
+        );
+        assert_eq!(
+            route(&Method::HEAD, "/item/42"),
+            Route::Item(ObjectId::new("42"))
+        );
+    }
+
+    #[test]
+    fn post_on_an_item_path_is_not_found() {
+        assert_eq!(route(&Method::POST, "/item/42"), Route::NotFound);
+    }
+
+    #[test]
+    fn parse_item_path_examples() {
+        assert_eq!(parse_item_path("/item/42"), Some("42"));
+        assert_eq!(parse_item_path("/item/"), None);
+        assert_eq!(parse_item_path("/item"), None);
+        assert_eq!(parse_item_path("/item/42/"), None);
+        assert_eq!(parse_item_path("/item/42/extra"), None);
+        assert_eq!(parse_item_path("/other/42"), None);
+        assert_eq!(parse_item_path(""), None);
+    }
+
+    #[test]
+    fn parse_item_path_never_panics_on_arbitrary_short_inputs() {
+        let candidates = [
+            "",
+            "/",
+            "/item",
+            "/item/",
+            "//item//",
+            "/item/\u{0}",
+            "/item/../../etc/passwd",
+        ];
+        for candidate in candidates {
+            let _ = parse_item_path(candidate);
         }
     }
 }

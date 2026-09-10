@@ -26,3 +26,17 @@ path = "fuzz_targets/soap_parse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "range_parse"
+path = "fuzz_targets/range_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "path_resolve"
+path = "fuzz_targets/path_resolve.rs"
+test = false
+doc = false
+bench = false

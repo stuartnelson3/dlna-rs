@@ -1,8 +1,8 @@
 //! Spins up the real HTTP server on an ephemeral loopback port and drives
 //! it with a plain HTTP client, per the testing strategy in docs/PLAN.md:
-//! this is the automated half of Phases 3 and 5's exit criteria (the
-//! manual half is `curl`/a real client against a running instance on the
-//! LAN).
+//! this is the automated half of Phases 3, 5, and 6's exit criteria (the
+//! manual half is `examples/verify_item_playback.rs`/a real client against
+//! a running instance on the LAN).
 
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
@@ -11,36 +11,58 @@ use std::time::SystemTime;
 use dlna_rs::content::folder::FolderMirror;
 use dlna_rs::core::http::HttpServer;
 use dlna_rs::index::{IndexBuilder, ObjectId};
+use dlna_rs::transform::passthrough::PassthroughSource;
 use quick_xml::Reader;
 use quick_xml::events::Event;
+use tempfile::TempDir;
 use uuid::Uuid;
 
-fn fixture_content_source() -> FolderMirror {
+const TRACK_CONTENT: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+/// Builds a real fixture directory on disk (Phase 6's item-serving reads
+/// actual file bytes, so a fake path in the index isn't enough anymore)
+/// and an `Index` that mirrors it.
+fn fixture_media_dir() -> (TempDir, FolderMirror, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let track_path = dir.path().join("01 - Track.mp3");
+    std::fs::write(&track_path, TRACK_CONTENT).unwrap();
+
     let mut builder = IndexBuilder::new();
     let album = builder.add_container(&ObjectId::root(), "Album".to_string());
     builder.add_item(
         &album,
         "01 - Track.mp3".to_string(),
-        PathBuf::from("/music/Album/01 - Track.mp3"),
-        12345,
+        track_path.clone(),
+        TRACK_CONTENT.len() as u64,
         SystemTime::UNIX_EPOCH,
     );
-    FolderMirror::new(builder.build())
+    (
+        dir,
+        FolderMirror::new(builder.build()),
+        dir_path_of(&track_path),
+    )
 }
 
-async fn start_server() -> (String, tokio::task::JoinHandle<()>) {
+fn dir_path_of(path: &std::path::Path) -> PathBuf {
+    path.parent().unwrap().to_path_buf()
+}
+
+async fn start_server() -> (String, TempDir, tokio::task::JoinHandle<()>) {
+    let (dir, content_source, media_root) = fixture_media_dir();
     let server = HttpServer::bind(
         Ipv4Addr::LOCALHOST,
         0,
         "integration-test".to_string(),
         Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap(),
-        fixture_content_source(),
+        content_source,
+        PassthroughSource,
+        vec![media_root],
     )
     .await
     .expect("failed to bind test HTTP server");
     let addr = server.local_addr().expect("bound server has a local addr");
     let handle = tokio::spawn(server.serve());
-    (format!("http://{addr}"), handle)
+    (format!("http://{addr}"), dir, handle)
 }
 
 fn assert_well_formed_xml(body: &str) {
@@ -76,7 +98,7 @@ fn browse_request_body(object_id: &str, browse_flag: &str) -> String {
 
 #[tokio::test]
 async fn serves_well_formed_description_xml() {
-    let (base, _handle) = start_server().await;
+    let (base, _dir, _handle) = start_server().await;
     let response = reqwest::get(format!("{base}/description.xml"))
         .await
         .expect("request failed");
@@ -98,7 +120,7 @@ async fn serves_well_formed_description_xml() {
 
 #[tokio::test]
 async fn serves_well_formed_scpd_for_both_services() {
-    let (base, _handle) = start_server().await;
+    let (base, _dir, _handle) = start_server().await;
 
     for path in ["/ContentDirectory/scpd.xml", "/ConnectionManager/scpd.xml"] {
         let response = reqwest::get(format!("{base}{path}"))
@@ -112,14 +134,14 @@ async fn serves_well_formed_scpd_for_both_services() {
 
 #[tokio::test]
 async fn unknown_path_is_404() {
-    let (base, _handle) = start_server().await;
+    let (base, _dir, _handle) = start_server().await;
     let response = reqwest::get(format!("{base}/nope")).await.unwrap();
     assert_eq!(response.status(), 404);
 }
 
 #[tokio::test]
 async fn browse_direct_children_of_root_over_real_http() {
-    let (base, _handle) = start_server().await;
+    let (base, _dir, _handle) = start_server().await;
     let client = reqwest::Client::new();
     let response = client
         .post(format!("{base}/ContentDirectory/control"))
@@ -135,14 +157,37 @@ async fn browse_direct_children_of_root_over_real_http() {
     assert!(body.contains("Album"));
 }
 
+async fn find_item_url(base: &str) -> String {
+    let client = reqwest::Client::new();
+    let album_response = client
+        .post(format!("{base}/ContentDirectory/control"))
+        .body(browse_request_body("0", "BrowseDirectChildren"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let album_id = extract_attr(&album_response, "container", "id");
+
+    let items_response = client
+        .post(format!("{base}/ContentDirectory/control"))
+        .body(browse_request_body(&album_id, "BrowseDirectChildren"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let item_id = extract_attr(&items_response, "item", "id");
+    format!("{base}/item/{item_id}")
+}
+
 #[tokio::test]
 async fn browse_metadata_of_an_item_over_real_http() {
-    let (base, _handle) = start_server().await;
+    let (base, _dir, _handle) = start_server().await;
     let client = reqwest::Client::new();
 
-    // Find the album's id first via BrowseDirectChildren on root, then the
-    // item's id via BrowseDirectChildren on the album - exercising the same
-    // two-hop navigation a real client does.
     let album_response = client
         .post(format!("{base}/ContentDirectory/control"))
         .body(browse_request_body("0", "BrowseDirectChildren"))
@@ -180,7 +225,7 @@ async fn browse_metadata_of_an_item_over_real_http() {
 
 #[tokio::test]
 async fn unimplemented_action_returns_a_soap_fault_with_500() {
-    let (base, _handle) = start_server().await;
+    let (base, _dir, _handle) = start_server().await;
     let client = reqwest::Client::new();
     let body = r#"<?xml version="1.0"?>
         <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
@@ -195,6 +240,140 @@ async fn unimplemented_action_returns_a_soap_fault_with_500() {
     assert_eq!(response.status(), 500);
     let text = response.text().await.unwrap();
     assert!(text.contains("<errorCode>401</errorCode>"));
+}
+
+#[tokio::test]
+async fn gets_the_whole_item_with_no_range_header() {
+    let (base, _dir, _handle) = start_server().await;
+    let item_url = find_item_url(&base).await;
+
+    let response = reqwest::get(&item_url).await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "audio/mpeg"
+    );
+    assert_eq!(response.headers().get("accept-ranges").unwrap(), "bytes");
+    assert_eq!(
+        response.headers().get("content-length").unwrap(),
+        &TRACK_CONTENT.len().to_string()
+    );
+    assert!(
+        response
+            .headers()
+            .get("contentfeatures.dlna.org")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("DLNA.ORG_PN=MP3")
+    );
+
+    let body = response.bytes().await.unwrap();
+    assert_eq!(&body[..], TRACK_CONTENT);
+}
+
+#[tokio::test]
+async fn head_returns_the_same_headers_with_no_body() {
+    let (base, _dir, _handle) = start_server().await;
+    let item_url = find_item_url(&base).await;
+
+    let client = reqwest::Client::new();
+    let response = client.head(&item_url).send().await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.headers().get("content-length").unwrap(),
+        &TRACK_CONTENT.len().to_string()
+    );
+    let body = response.bytes().await.unwrap();
+    assert!(body.is_empty());
+}
+
+#[tokio::test]
+async fn mid_file_range_returns_exactly_the_requested_bytes() {
+    let (base, _dir, _handle) = start_server().await;
+    let item_url = find_item_url(&base).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&item_url)
+        .header("Range", "bytes=5-9")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 206);
+    assert_eq!(
+        response.headers().get("content-range").unwrap(),
+        &format!("bytes 5-9/{}", TRACK_CONTENT.len())
+    );
+    assert_eq!(response.headers().get("content-length").unwrap(), "5");
+
+    let body = response.bytes().await.unwrap();
+    assert_eq!(&body[..], &TRACK_CONTENT[5..10]);
+}
+
+#[tokio::test]
+async fn suffix_range_returns_the_last_n_bytes() {
+    let (base, _dir, _handle) = start_server().await;
+    let item_url = find_item_url(&base).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&item_url)
+        .header("Range", "bytes=-4")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 206);
+    let body = response.bytes().await.unwrap();
+    assert_eq!(&body[..], &TRACK_CONTENT[TRACK_CONTENT.len() - 4..]);
+}
+
+#[tokio::test]
+async fn out_of_bounds_range_is_416_with_content_range_star() {
+    let (base, _dir, _handle) = start_server().await;
+    let item_url = find_item_url(&base).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&item_url)
+        .header(
+            "Range",
+            format!(
+                "bytes={}-{}",
+                TRACK_CONTENT.len() + 100,
+                TRACK_CONTENT.len() + 200
+            ),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 416);
+    assert_eq!(
+        response.headers().get("content-range").unwrap(),
+        &format!("bytes */{}", TRACK_CONTENT.len())
+    );
+}
+
+#[tokio::test]
+async fn multi_range_is_416() {
+    let (base, _dir, _handle) = start_server().await;
+    let item_url = find_item_url(&base).await;
+
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&item_url)
+        .header("Range", "bytes=0-1,2-3")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 416);
+}
+
+#[tokio::test]
+async fn unknown_item_id_is_404() {
+    let (base, _dir, _handle) = start_server().await;
+    let response = reqwest::get(format!("{base}/item/999999")).await.unwrap();
+    assert_eq!(response.status(), 404);
 }
 
 /// Pulls `attribute="value"` out of the first `<tag ...>` in some

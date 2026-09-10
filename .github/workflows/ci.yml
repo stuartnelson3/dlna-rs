@@ -66,8 +66,11 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   fuzz-smoke:
-    name: fuzz smoke (ssdp_parse)
+    name: fuzz smoke (${{ matrix.target }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [ssdp_parse, soap_parse, range_parse, path_resolve]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -75,7 +78,7 @@ jobs:
         with:
           workspaces: fuzz -> target
       - run: cargo install cargo-fuzz --locked
-      - run: cargo fuzz run ssdp_parse -- -max_total_time=90
+      - run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=90
 
-# More targets (soap_parse, range_parse, path_resolve) get added to the
-# fuzz-smoke job above as they're written, starting in Phase 5/6.
+# All four fuzz targets from docs/PLAN.md are covered above via the
+# matrix. A new target just needs adding to the `target` list.

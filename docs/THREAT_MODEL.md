@@ -21,18 +21,34 @@ this.
 These get the most test and fuzz investment, because they're the ones a
 LAN attacker can actually hit.
 
-1. **Path resolution for file serving.** A request path (from a
-   Browse-generated `<res>` URL, or a guessed one) has to resolve to a
-   filesystem path that's verified to still be inside the configured media
-   root, checked *after* canonicalization — reject `..`, encoded traversal
-   (`%2e%2e`), and symlinks that escape the root. Implemented and fuzzed as
-   a pure function (`&str -> Result<PathBuf, Error>`), no I/O side effects,
-   so it's cheap to fuzz exhaustively.
-2. **`Range` header parsing.** This is the exact bug class behind a real
-   MiniDLNA CVE (a chunked-length parsing overflow). Malformed ranges get
-   416, not a guess; start > end gets rejected; ranges past the file's
-   length get rejected; all arithmetic on attacker-supplied offsets is
-   checked (`checked_sub`/`checked_add`), never raw `-`/`+`.
+1. **Path resolution for file serving.** The classic version of this bug
+   (a request path with `..`/encoded traversal getting concatenated onto
+   a filesystem root) doesn't have a way into this codebase: item URLs
+   are `/item/{id}` (decided in Phase 5) where `{id}` is an opaque
+   `ObjectId` that only ever drives an index lookup — no attacker string
+   is ever built into a path. `core::http::router::parse_item_path`
+   (extracting `{id}` from the URL) is still fuzzed
+   (`fuzz/fuzz_targets/path_resolve.rs`) as the one place attacker text
+   gets parsed at all, pure and total, no I/O. The *real* residual risk
+   here is different: `follow_symlinks` letting something inside the
+   configured root resolve to a target outside it. That's handled by
+   `core::http::resolve_within_roots`, which canonicalizes an item's path
+   at serve time (not just scan time — a symlink's target can change
+   between scans) and checks it against the canonicalized configured
+   roots. Property-tested with real tempdir fixtures, including symlinks
+   that both do and don't escape the root, and a regression guard on the
+   classic naive-string-prefix trap (`/media/music-private` must not look
+   like it's inside `/media/music`).
+2. **`Range` header parsing.** Implemented (`core::http::range`), and this
+   is the exact bug class behind a real MiniDLNA CVE (a chunked-length
+   parsing overflow). Malformed ranges get 416, not a guess; start > end
+   gets rejected; ranges past the file's length get rejected; any range
+   at all against an empty file gets rejected; all arithmetic on
+   attacker-supplied offsets is checked or saturating
+   (`checked_sub`/`saturating_sub`), never raw `-`/`+`. Fuzzed
+   (`fuzz/fuzz_targets/range_parse.rs`) against both the header string and
+   the file size it's checked against — 21.5M executions in a 20s local
+   run, no crashes.
 3. **SSDP datagram parsing and SOAP body parsing**, including the
    object-ID namespace that routes a Browse request to a `ContentSource`.
    Both are reachable from any device on the LAN. Buffer sizes are bounded
@@ -72,8 +88,6 @@ LAN attacker can actually hit.
    still doesn't exist — that's Phase 8, and per `docs/DESIGN.md` it's
    `CompositeContentSource`'s job specifically, not something individual
    sources like `FolderMirror` need to know about.
-
-Path resolution and Range parsing don't exist yet either — Phase 6.
 
 ## Process-level hardening
 

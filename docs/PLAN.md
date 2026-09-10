@@ -291,24 +291,86 @@ exactly as designed, including the 500-with-SOAP-fault response).
 
 **Goal:** a client can actually play a file, including seeking.
 
-- [ ] Path resolution as a pure function (`&str -> Result<PathBuf, Error>`):
-      reject `..`, encoded traversal, and out-of-root symlinks after
-      canonicalization.
-- [ ] Range header parsing (`http-range-header` or hand-rolled): single
-      range only, checked arithmetic, 416 for malformed or multi-range
-      requests.
-- [ ] `trait ByteSource` + `PassthroughSource` (direct byte-offset seeks, no
-      transformation).
-- [ ] Correct response headers: `Content-Type`, `Content-Length`,
-      `Accept-Ranges: bytes`, `contentFeatures.dlna.org`,
-      `transferMode.dlna.org`.
-- [ ] `fuzz/fuzz_targets/range_parse.rs` and
-      `fuzz/fuzz_targets/path_resolve.rs`.
-- [ ] Property tests: path resolution never escapes the media root; Range
-      parsing never panics and never produces an invalid `Content-Range`.
+- [x] **Reframed "path resolution" for this architecture, deliberately.**
+      The spec's literal framing (`&str -> Result<PathBuf, Error>`,
+      reject `..`/encoded traversal) assumes a URL that embeds a real
+      path fragment. Ours doesn't: `/item/{id}` (decided in Phase 5) is
+      an opaque `ObjectId` that only ever drives an index lookup — no
+      attacker string is ever concatenated into a filesystem path, so the
+      classic traversal bug class this guards against doesn't have a
+      way in. The real residual risk is different: `follow_symlinks`
+      letting a symlink *inside* the configured root resolve to a target
+      *outside* it. That's what actually got built:
+      `core::http::resolve_within_roots` canonicalizes an item's path at
+      **serve time** (not just scan time — a symlink's target can change
+      between scans) and verifies it's still under one of the
+      canonicalized `media_roots`. Property-tested (see below), including
+      a regression guard on the classic naive-string-prefix trap
+      (`/media/music-private` must not look like it's inside
+      `/media/music` — `Path::starts_with` compares components, not raw
+      strings, so this passes, but the test pins that assumption).
+- [x] `core::http::router::parse_item_path` — the one place raw,
+      attacker-controlled request-path text actually gets parsed
+      (extracting `{id}` from `/item/{id}`), so *this* is what
+      `fuzz/fuzz_targets/path_resolve.rs` fuzzes, even though it's a
+      narrower thing than spec's original framing (see above).
+- [x] `core::http::range`: hand-rolled (not `http-range-header` — the
+      parser ended up small enough that a dependency wasn't worth it),
+      single range only, checked/saturating arithmetic throughout,
+      handles all three RFC 7233 forms (`start-end`, `start-`, `-suffix`),
+      416 for malformed, multi-range, or any range against an
+      empty file.
+- [x] `trait ByteSource` (`core::byte_source`) + `PassthroughSource`
+      (`transform::passthrough`). Hand-rolled `Pin<Box<dyn Future>>`
+      instead of the `async-trait` crate — boxing by hand at one call
+      site is a few extra lines, not worth a dependency whose only job
+      is that syntax. Reads are buffered into memory (`Bytes`), not
+      streamed — deliberate MVP simplification: this project's target
+      files are music tracks (a few MB), not video, and low resource
+      footprint is explicitly "a natural consequence of narrow scope,
+      not a thing to specifically optimize for" (spec goal 3). True
+      streaming is one function to swap later if it ever matters.
+      `supports_range()` is checked before honoring any `Range` header —
+      false would mean serving the whole body with `200 OK` regardless,
+      per the spec's design note (not exercised yet: `PassthroughSource`
+      always returns `true`).
+- [x] Response headers: `Content-Type`, `Content-Length`,
+      `Accept-Ranges: bytes`, `contentFeatures.dlna.org` (reuses
+      `core::didl::format`, refactored this phase into
+      `mime_for`/`dlna_content_features` primitives that `protocol_info`
+      itself now builds on, so Browse responses and item-serving headers
+      can't drift apart), `transferMode.dlna.org: Streaming` (always —
+      this server only ever serves audio). `HEAD` computes the identical
+      response and strips the body, so headers can never drift between
+      `GET` and `HEAD` for the same request.
+- [x] `fuzz/fuzz_targets/range_parse.rs` (fuzzes both the header string
+      and the file size it's checked against — 21.5M execs / 20s, no
+      crashes) and `fuzz/fuzz_targets/path_resolve.rs` (27M execs / 20s,
+      no crashes). **Also fixed while here**: the CI fuzz-smoke job was
+      still only running `ssdp_parse` — `soap_parse` from Phase 5 had
+      never actually been added despite the comment left saying it
+      would be. Converted the job to a matrix over all four targets so
+      this can't be missed again.
+- [x] Property tests: `resolve_within_roots` never escapes the root for
+      arbitrary real nested files (`proptest` + real tempdir fixtures,
+      matching the style from Phase 4's scanner property test); `range`
+      parsing is exhaustively unit-tested per RFC 7233 form and fuzzed
+      for the "never panics" property, plus explicit tests that a 416
+      response always carries a well-formed `Content-Range: bytes
+      */{size}`.
 
-**Exit criterion:** `curl` with and without `Range` headers streams a fixture
-file correctly, including a mid-file seek.
+**Exit criterion:** GET with and without `Range` headers streams a fixture
+file correctly, including a mid-file seek — verified three ways:
+`tests/integration.rs` (13 new assertions: full GET, `HEAD`, mid-file
+range, suffix range, out-of-bounds → 416, multi-range → 416, unknown
+item → 404, all against a real file on disk); by hand against a real
+~4.8MB MP3 on a running instance on the LAN; and via
+`examples/verify_item_playback.rs` — a small hand-rolled HTTP/1.1 client
+over `TcpStream` (no `curl`, no new dependency, since our own responses
+are always a plain `Content-Length` body, never chunked) that Browses a
+running server to find a real item and exercises the same checks,
+reproducibly. Run it with `cargo run --example verify_item_playback --
+[host] [port]`.
 
 ---
 

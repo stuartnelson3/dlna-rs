@@ -9,6 +9,7 @@ use dlna_rs::core::http::HttpServer;
 use dlna_rs::core::net;
 use dlna_rs::core::ssdp::Ssdp;
 use dlna_rs::scanner;
+use dlna_rs::transform::passthrough::PassthroughSource;
 use uuid::Uuid;
 
 struct Args {
@@ -148,12 +149,21 @@ async fn main() -> ExitCode {
     log::info!("scanned media directories: {} entries indexed", index.len());
     let content_source = FolderMirror::new(index);
 
+    let media_roots = config
+        .media
+        .directories
+        .iter()
+        .map(|dir| dir.path.clone())
+        .collect();
+
     let http = match HttpServer::bind(
         interface_addr,
         config.server.port,
         config.server.friendly_name.clone(),
         uuid,
         content_source,
+        PassthroughSource,
+        media_roots,
     )
     .await
     {

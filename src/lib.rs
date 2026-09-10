@@ -5,6 +5,7 @@ pub mod content;
 pub mod core;
 pub mod index;
 pub mod scanner;
+pub mod transform;
 
 /// The seam `fuzz/` (a separate crate — see `fuzz/Cargo.toml`) reaches
 /// through to fuzz pure parsing functions. Deliberately narrow: re-export
@@ -14,6 +15,8 @@ pub mod scanner;
 /// encapsulation guidance for why this exists.
 #[doc(hidden)]
 pub mod fuzz_support {
+    pub use crate::core::http::range::parse as parse_range;
+    pub use crate::core::http::router::parse_item_path;
     pub use crate::core::soap::parse_action as parse_soap_action;
     pub use crate::core::ssdp::message::parse_search_request;
 }

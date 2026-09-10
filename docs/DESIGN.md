@@ -181,7 +181,25 @@ ContentSource>` happens inside `bind`. That's what let `content_source`
 external-use check was actually applied to them) stay `pub(crate)` instead
 of `pub` — see the encapsulation guidance below.
 
-`ByteSource` and `MetadataProvider` still don't exist — Phases 6 and 8.
+Phase 6 adds the second extension-point trait, `ByteSource`
+(`core::byte_source`), with `PassthroughSource` (`transform::passthrough`)
+as its implementation, and wires real file-serving into `core::http`:
+`/item/{id}` GET/HEAD, with `Range` support (`core::http::range`).
+`HttpServer::bind` takes `impl ByteSource` the same way it already took
+`impl ContentSource` — same reasoning, same payoff (`core::byte_source`
+stays `pub(crate)`). One real adaptation from the spec's literal design:
+the "path resolution" security concern (§7's `&str -> Result<PathBuf,
+Error>`, reject `..`/traversal) assumes a URL that embeds a real path
+fragment. This project's `/item/{id}` scheme (decided in Phase 5) is an
+opaque ID that only ever drives an index lookup — no attacker string is
+ever concatenated into a filesystem path, so that bug class has no way in
+here. The actual residual risk is `follow_symlinks` letting something
+inside the configured root resolve to a target outside it, which is a
+filesystem-verification question, not a string-parsing one — see
+`docs/THREAT_MODEL.md` and `docs/PLAN.md` Phase 6 for the full reasoning
+and what got built instead.
+
+`MetadataProvider` still doesn't exist — Phase 8.
 
 See [`PLAN.md`](PLAN.md) for what's next and why the phases are ordered the
 way they are.
@@ -204,6 +222,23 @@ way they are.
   not this server implements it). Real minimal servers don't do that —
   MiniDLNA's own SCPD lists only what it actually supports. Followed that
   precedent instead: SCPD as an honest capability list.
+- **`ByteSource` reads are buffered, not streamed**, and boxed by hand
+  instead of using the `async-trait` crate. Neither was in the spec's
+  crate table (which didn't anticipate needing either choice) — both are
+  Phase 6 calls made for files this size (see `docs/PLAN.md` Phase 6).
+
+## Encapsulation, one more round
+
+Applying the same test from above to everything Phase 6 added:
+`core::byte_source` (the trait), `core::http::range` (parsing), and
+`transform::passthrough` were checked against `main.rs`/`tests/`/`fuzz/`
+the same way `content_source`/`didl`/`dispatch`/`soap` were last time.
+Only `transform::passthrough::PassthroughSource` (a concrete type
+`main.rs` and `tests/integration.rs` construct directly, same as
+`FolderMirror`) and `core::http::range::parse`/
+`core::http::router::parse_item_path` (needed by their fuzz targets, via
+`fuzz_support`) cross the boundary; `core::byte_source` itself stays
+`pub(crate)`.
 
 ## Config
 

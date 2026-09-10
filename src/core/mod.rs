@@ -7,6 +7,7 @@
 // itself and stays `pub(crate)` — see docs/DESIGN.md's encapsulation
 // guidance. `fuzz_support` in lib.rs is the deliberate, narrow exception
 // for the fuzz targets that need a `pub(crate)` module's function anyway.
+pub(crate) mod byte_source;
 pub(crate) mod content_source;
 pub(crate) mod device;
 pub(crate) mod didl;
