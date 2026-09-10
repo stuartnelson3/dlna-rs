@@ -249,6 +249,30 @@ answered for — in both roles at once. `docs/PLAN.md`'s Phase 8 section
 has the full account of each bug and its fix; worth reading as a
 worked example of what this kind of property test is actually for.
 
+Phase 9 changes no design. It tests one. Nothing in `src/` gained a new
+module or a new trait; the work was proving three things that were true by
+construction but never actually checked: all four fuzz targets survive a
+sustained 120-second run, `dlna-rs` itself carries zero unsafe code (an
+independent `cargo geiger` check, not just the compiler's
+`#![forbid(unsafe_code)]`), and a panic in one connection's task really
+does leave every other connection untouched. A real test now proves that
+last claim; before this phase, only a doc comment did.
+`systemd/dlna-rs.service` ships the deployment half: every sandboxing
+directive in it was verified against a real running instance, not written
+from documentation alone, and a real negative control
+(`RestrictAddressFamilies` without `AF_NETLINK`) confirmed that dropping
+the wrong permission fails loudly at startup instead of quietly breaking
+interface resolution. See `docs/PLAN.md`'s Phase 9 section for the full
+verification log.
+
+Phase 11 is real-client sign-off, not new design either. A third-party
+control point, the DTS Play-Fi app, found `dlna-rs` over SSDP, browsed its
+library, and played back both FLAC and MP3 with working seek, including a
+24-bit FLAC. That closes the loop this whole document has described in the
+abstract: a real DLNA client, not this project's own test tooling,
+exercising discovery, ContentDirectory, and Range serving together. See
+`docs/PLAN.md`'s Phase 11 section for the details.
+
 See [`PLAN.md`](PLAN.md) for what's next and why the phases are ordered the
 way they are.
 

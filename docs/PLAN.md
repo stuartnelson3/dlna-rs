@@ -716,13 +716,37 @@ attached geiger report with no manual steps.
       the user's own words were "was fast, and the recently added albums
       stuff worked correctly." A 24-bit FLAC specifically was confirmed
       streaming and seeking correctly too.
-- [ ] Finalize `docs/DESIGN.md` and `docs/THREAT_MODEL.md`.
-- [ ] Fill in the README's Building and License sections for real.
+- [x] Finalize `docs/DESIGN.md` and `docs/THREAT_MODEL.md`. `DESIGN.md`'s
+      "Current state" now covers Phase 9 (a verification pass, not a
+      design change: nothing in `src/` gained a module or a trait) and
+      Phase 11's real-client sign-off. `THREAT_MODEL.md`'s fuzz numbers
+      were pointing at the original short Phase 2/5/6 runs (20 to 30
+      seconds each); updated to the longer, more rigorous Phase 9 runs
+      (120 seconds each, higher executions), and the panic-isolation
+      claim now cites the real test that proves it instead of only a
+      doc comment.
+- [x] Fill in the README's Building and License sections for real. Both
+      already held real content from earlier session work (the actual
+      dual-license text, real build instructions, the musl static-build
+      option). What was genuinely stale was the Status section, still
+      claiming "Phases 0 through 8" after Phase 9 and half of Phase 11
+      had already landed. Fixed, and Building now points at
+      `systemd/dlna-rs.service` for anyone wanting to run this as a
+      real service.
 
 **Exit criterion:** discoverable and playable, seek included, on real
 hardware and one software client; clean `cargo audit`/`cargo deny`; zero
 `unsafe` in first-party code; fuzz targets crash-free for the scheduled
 duration. This is MVP v0.1.
+
+**Met.** Real-client discovery, browse, playback, and seek: verified by
+the user against the DTS Play-Fi app (above). `cargo audit`: 0
+vulnerabilities across 161 dependencies. `cargo deny check`: advisories,
+bans, licenses, and sources all pass (three warnings about license
+allowances in `deny.toml` that no current dependency happens to use,
+not a failure). Zero `unsafe` in `dlna-rs` itself, and all four fuzz
+targets crash-free for a sustained 120-second run: both confirmed in
+Phase 9. **This is MVP v0.1.**
 
 ---
 

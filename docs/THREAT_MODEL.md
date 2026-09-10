@@ -38,7 +38,9 @@ LAN attacker can actually hit.
    roots. Property-tested with real tempdir fixtures, including symlinks
    that both do and don't escape the root, and a regression guard on the
    classic naive-string-prefix trap (`/media/music-private` must not look
-   like it's inside `/media/music`).
+   like it's inside `/media/music`). Fuzzed with
+   `fuzz/fuzz_targets/path_resolve.rs` — 122M executions in a 120s local
+   run (Phase 9), no crashes.
 2. **`Range` header parsing.** Implemented (`core::http::range`), and this
    is the exact bug class behind a real MiniDLNA CVE (a chunked-length
    parsing overflow). Malformed ranges get 416, not a guess; start > end
@@ -47,8 +49,8 @@ LAN attacker can actually hit.
    attacker-supplied offsets is checked or saturating
    (`checked_sub`/`saturating_sub`), never raw `-`/`+`. Fuzzed
    (`fuzz/fuzz_targets/range_parse.rs`) against both the header string and
-   the file size it's checked against — 21.5M executions in a 20s local
-   run, no crashes.
+   the file size it's checked against — 121M executions in a 120s local
+   run (Phase 9), no crashes.
 3. **SSDP datagram parsing and SOAP body parsing**, including the
    object-ID namespace that routes a Browse request to a `ContentSource`.
    Both are reachable from any device on the LAN. Buffer sizes are bounded
@@ -62,8 +64,8 @@ LAN attacker can actually hit.
    `parse_search_request`): a hard 2KB size cap before any parsing happens,
    rejects anything that isn't valid UTF-8 or a well-formed M-SEARCH
    request-line, returns `Result` rather than panicking on any malformed
-   input. Fuzzed with `fuzz/fuzz_targets/ssdp_parse.rs` — 31M executions in
-   a 30s local run, no crashes (see `docs/PLAN.md` Phase 2).
+   input. Fuzzed with `fuzz/fuzz_targets/ssdp_parse.rs` — 118M executions
+   in a 120s local run (Phase 9), no crashes.
 
    **SOAP body parsing is implemented** (`src/core/soap.rs`,
    `parse_action`): an 8KB size cap checked twice — against the declared
@@ -73,8 +75,10 @@ LAN attacker can actually hit.
    operation returns `Result`/`Option`; the worst a hostile body can
    produce is a parse error or (for pathologically-nested-but-well-formed
    XML) a semantically wrong `SoapAction`, never a panic. Fuzzed with
-   `fuzz/fuzz_targets/soap_parse.rs` — 3.4M executions in a 30s local run,
-   no crashes.
+   `fuzz/fuzz_targets/soap_parse.rs` — 5.4M executions in a 120s local run
+   (Phase 9), no crashes. The lower rate against the other three targets
+   matches XML parsing costing more per input than plain string parsing,
+   not a weaker fuzz session.
 
    **The fail-closed contract on `ContentSource` is attacker-reachable for
    real**, via `core::dispatch::browse` (Phase 5): a Browse request's
@@ -118,7 +122,10 @@ LAN attacker can actually hit.
   any single reachable panic — including one triggered by a malformed
   request from an untrusted LAN client — into a full-process crash. That's
   a real availability risk for a network-facing daemon, so it's a
-  deliberate choice, not an oversight.
+  deliberate choice, not an oversight. Proven, not just reasoned about:
+  `core::http::tests::a_panic_in_one_connection_task_does_not_take_down_the_server`
+  (Phase 9) binds a real server, panics one connection deliberately, and
+  confirms a second connection still gets a normal response.
 - A systemd unit with real hardening directives ships with the project:
   `systemd/dlna-rs.service`. Every sandboxing directive in it was tested
   against a real running instance under `systemd-run --user`, including

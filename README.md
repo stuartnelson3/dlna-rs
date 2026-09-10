@@ -12,10 +12,11 @@ be Plex or Jellyfin.
 
 ## Status
 
-Phases 0 through 8 are done. Everything below works against a real
-running instance. What is left is hardening and sign-off, not new
-features. See [`docs/PLAN.md`](docs/PLAN.md) for the phased plan this
-repo tracks instead of GitHub issues.
+Phases 0 through 9 are done, and so is Phase 11, real-client sign-off. A
+real DLNA client found this server over SSDP, browsed its library, and
+played back FLAC and MP3 with working seek. What is left is Phase 10,
+wiring up CI. See [`docs/PLAN.md`](docs/PLAN.md) for the phased plan
+this repo tracks instead of GitHub issues.
 
 ## What it does
 
@@ -59,6 +60,9 @@ standalone tools for poking at SSDP traffic on your LAN while developing.
 `examples/verify_item_playback.rs` and `examples/verify_music_library.rs`
 do the same for browsing and playback against a real running instance.
 Run any of them with `cargo run --example <name>`.
+
+To run as a real service, see [`systemd/dlna-rs.service`](systemd/dlna-rs.service).
+Its own comments cover installing it and the tradeoffs it makes.
 
 ## Docs
 
