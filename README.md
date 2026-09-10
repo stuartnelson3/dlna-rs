@@ -13,11 +13,11 @@ casting, no web UI, no accounts.
 
 ## Status
 
-Config loading and SSDP discovery work: it joins the LAN multicast group,
-answers `M-SEARCH`, and re-announces itself on a timer. It's discoverable
-but not yet playable — no ContentDirectory service or file serving yet.
-See [`docs/PLAN.md`](docs/PLAN.md) for the phased plan this repo is
-tracking instead of GitHub issues.
+Phases 0 through 8 are done. SSDP discovery, ContentDirectory browsing,
+file playback, rescanning, and the views below all work against a real
+running instance. What's left is hardening and sign-off, not new
+features. See [`docs/PLAN.md`](docs/PLAN.md) for the phased plan this
+repo tracks instead of GitHub issues.
 
 ## What it does
 
@@ -43,8 +43,10 @@ cp examples/dlna-rs.example.toml dlna-rs.toml   # edit paths/interface for your 
 ```
 
 `examples/ssdp_discover.rs` and `examples/ssdp_monitor.rs` are small
-standalone tools for poking at SSDP traffic on your LAN while developing —
-run them with `cargo run --example ssdp_discover`.
+standalone tools for poking at SSDP traffic on your LAN while developing.
+`examples/verify_item_playback.rs` and `examples/verify_music_library.rs`
+do the same for browsing and playback against a real running instance.
+Run any of them with `cargo run --example <name>`.
 
 ## Docs
 
