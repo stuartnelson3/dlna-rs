@@ -526,8 +526,20 @@ real media server on the user's LAN rather than a test fixture:
    property test in this phase's own checklist never caught this, because
    `proptest`'s generated trees stay small by construction — a reminder
    that a property test proves an invariant holds, not that it holds
-   *fast enough*, and this project has no test at realistic library
-   scale to catch the second kind of bug on its own.
+   *fast enough*.
+
+   That gap is closed now: `browsing_a_large_library_stays_fast` builds
+   the same 10,000-track, 1,000-album, 200-artist shape directly through
+   `IndexBuilder` (no real files, no scanner — this test is about
+   `MusicLibraryView`'s own complexity, not disk I/O) and asserts every
+   Browse call finishes in under 1.5 seconds. Measured headroom is large
+   — the whole test runs in about 60ms in an unoptimized debug build,
+   two orders of magnitude under the threshold — deliberately, so it
+   stays green on a slower or loaded machine but still fails hard the
+   moment an O(albums) or O(tracks) re-walk per item sneaks back in. A
+   real, deliberate slowdown should fail this test and force whoever
+   made the change to raise the threshold on purpose, with a reason
+   written next to it — not slip past unnoticed.
 
 **Design decisions, from the planning conversation before this phase's
 code was written:**

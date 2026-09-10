@@ -710,4 +710,89 @@ mod tests {
             }
         }
     }
+
+    /// 200 artists, 5 albums each, 10 tracks each: 10,000 tracks, 1,000
+    /// albums. The same shape that caught bug 4 in docs/PLAN.md's Phase 8
+    /// section - a real media server hung on a plain root Browse because
+    /// `tracks_of_album`/`albums_under_artist` each re-walked the whole
+    /// index once per album or artist, turning a Browse of 1,000 albums
+    /// into roughly 1,000 full re-walks of the index. Built through
+    /// `IndexBuilder` directly, not the real scanner: this test is about
+    /// `MusicLibraryView`'s own complexity, not disk I/O.
+    fn large_library_fixture() -> SharedIndex {
+        let mut builder = IndexBuilder::new();
+        for artist_n in 0..200 {
+            let artist = builder.add_container(&ObjectId::root(), format!("Artist {artist_n}"));
+            for album_n in 0..5 {
+                let album = builder.add_container(&artist, format!("Album {album_n}"));
+                for track_n in 0..10 {
+                    builder.add_item(
+                        &album,
+                        format!("{track_n:02} - Track.mp3"),
+                        PathBuf::from(format!(
+                            "/m/artist-{artist_n}/album-{album_n}/track-{track_n}.mp3"
+                        )),
+                        1,
+                        SystemTime::UNIX_EPOCH,
+                    );
+                }
+            }
+        }
+        SharedIndex::new(builder.build())
+    }
+
+    /// Fails if browsing a 10,000-track library takes more than a
+    /// generous fraction of a second - not a tight benchmark, a tripwire.
+    /// Measured on ordinary dev hardware right after the bug-4 fix: a
+    /// release-mode root Browse for Albums or Artists took ~30ms, and
+    /// browsing one artist's five albums took ~5ms. This threshold gives
+    /// roughly two orders of magnitude of headroom over that, so it stays
+    /// green on a slower or loaded machine in debug mode, but still fails
+    /// hard the moment someone reintroduces an O(albums) or O(tracks)
+    /// re-walk per item - the exact shape of bug 4. A change that
+    /// legitimately needs more time than this should raise that as a
+    /// real, visible tradeoff, not slip in unnoticed.
+    const MAX_BROWSE_TIME: Duration = Duration::from_millis(1500);
+
+    fn assert_fast<T>(label: &str, f: impl FnOnce() -> T) -> T {
+        let started = std::time::Instant::now();
+        let result = f();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < MAX_BROWSE_TIME,
+            "{label} took {elapsed:?}, expected under {MAX_BROWSE_TIME:?} - \
+             see docs/PLAN.md Phase 8 bug 4 (a re-walk of the whole index \
+             per album/artist snuck back in?)"
+        );
+        result
+    }
+
+    #[test]
+    fn browsing_a_large_library_stays_fast() {
+        let index = large_library_fixture();
+
+        let albums_view = MusicLibraryView::new(index.clone(), Mode::Albums);
+        let albums = assert_fast("Albums root browse (1,000 albums)", || {
+            albums_view.children(&ObjectId::root()).unwrap()
+        });
+        assert_eq!(albums.len(), 1000);
+
+        let artists_view = MusicLibraryView::new(index.clone(), Mode::Artists);
+        let artists = assert_fast("Artists root browse (200 artists)", || {
+            artists_view.children(&ObjectId::root()).unwrap()
+        });
+        assert_eq!(artists.len(), 200);
+
+        let one_artist_id = artists[0].id().clone();
+        let albums_for_one_artist = assert_fast("browsing one artist's albums", || {
+            artists_view.children(&one_artist_id).unwrap()
+        });
+        assert_eq!(albums_for_one_artist.len(), 5);
+
+        let one_album_id = albums[0].id().clone();
+        let tracks_for_one_album = assert_fast("browsing one album's tracks", || {
+            albums_view.children(&one_album_id).unwrap()
+        });
+        assert_eq!(tracks_for_one_album.len(), 10);
+    }
 }
