@@ -537,6 +537,21 @@ URL served the exact bytes of the real file on disk. An unknown mount
 prefix and an unknown ID inside a known prefix both returned UPnP fault
 701.
 
+That first manual check was ad hoc `curl`. Following Phase 6's own rule
+— a manual check belongs in a committed, reproducible script, not a
+one-off terminal session — it's now `examples/verify_music_library.rs`:
+same hand-rolled-`TcpStream` style as `examples/verify_item_playback.rs`,
+no `curl` dependency. It walks whatever tree the running server actually
+returns (it doesn't assume a fixed `library.views` list), checking at
+every container that `childCount` matches what browsing in actually
+returns and that every entry's `parentID` names the container just
+browsed — the exact two bugs above, turned into a standing regression
+check against a real server, not just the in-process property test.
+Writing it caught a real bug immediately, in the script itself: an
+`<item>` tag appearing before a `<container>` tag in a response made its
+first regex-free tag scan skip the item entirely. Fixed by comparing tag
+positions directly instead of preferring one tag name over the other.
+
 **Exit criterion:** Browsing the root shows exactly the configured views;
 adding more than 50 items doesn't break Recently Added (the MiniDLNA bug
 this feature exists to avoid) — met, verified above with a
