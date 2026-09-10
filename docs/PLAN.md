@@ -503,6 +503,32 @@ Bug 1 also hid a `childCount` mismatch: an album's displayed count must
 match what browsing it actually returns (tracks only), not the real
 folder's raw child count. Fixed alongside bug 2.
 
+**A fourth bug, found after this phase had already shipped**, against a
+real media server on the user's LAN rather than a test fixture:
+
+4. **A quadratic Browse.** `tracks_of_album` and `albums_under_artist`
+   each called `album_ids()`/`artist_ids()` to check whether an ID was
+   real — and each of those re-walked the *entire* index from scratch.
+   `albums()` and `artists()` call those two functions once per album or
+   artist they find. On the tiny fixtures every test and manual check
+   here used (a dozen or so tracks), a full re-walk per album is free.
+   On a real library the user pointed a running instance at, one Browse
+   of the root took long enough that the client gave up and disconnected
+   before any response came back — `HTTP connection error: connection
+   closed before message completed` in the server's own log was the
+   first sign, then a synthetic 10,000-track, 1,000-album, 200-artist
+   fixture reproduced it directly. Fix: `MusicLibraryView::snapshot()`
+   now walks the index once per Browse call and returns every item plus
+   the derived album/artist ID sets; every other method takes that
+   `&Snapshot` instead of re-deriving it. Verified against that same
+   10,000-track fixture afterward: root Browse in 34ms, an artist's five
+   albums in 4.5ms, `childCount` still correct on every one of them. The
+   property test in this phase's own checklist never caught this, because
+   `proptest`'s generated trees stay small by construction — a reminder
+   that a property test proves an invariant holds, not that it holds
+   *fast enough*, and this project has no test at realistic library
+   scale to catch the second kind of bug on its own.
+
 **Design decisions, from the planning conversation before this phase's
 code was written:**
 

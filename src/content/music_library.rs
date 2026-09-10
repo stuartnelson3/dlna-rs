@@ -46,24 +46,53 @@ impl MusicLibraryView {
     /// real parent the index recorded. `entry()` below must match: an ID
     /// that names a top-level entry has to report the same parent.
     fn top_level(&self) -> Vec<Entry> {
+        let snapshot = self.snapshot();
         let entries = match &self.mode {
-            Mode::AllSongs => self.all_songs(),
-            Mode::Albums => self.albums(),
-            Mode::Artists => self.artists(),
+            Mode::AllSongs => Self::all_songs(&snapshot),
+            Mode::Albums => self.albums(&snapshot),
+            Mode::Artists => self.artists(&snapshot),
             Mode::RecentlyAddedSongs {
                 count,
                 max_age_days,
-            } => self.recently_added_songs(*count, *max_age_days),
+            } => Self::recently_added_songs(&snapshot, *count, *max_age_days),
             Mode::RecentlyAddedAlbums {
                 count,
                 max_age_days,
-            } => self.recently_added_albums(*count, *max_age_days),
+            } => self.recently_added_albums(&snapshot, *count, *max_age_days),
         };
         entries.into_iter().map(reparent_to_root).collect()
     }
 
+    /// Walks every container from the root down once, and derives every
+    /// grouping this view needs from that single pass: every item, which
+    /// containers are albums (they hold a track directly), and which are
+    /// artists (they hold an album directly). Everything else in this
+    /// type takes a `&Snapshot` instead of re-deriving these - a real
+    /// library can hold many thousands of tracks, and re-walking the
+    /// whole tree once per album or per artist turns one Browse call
+    /// into a browse-call-shaped denial of service against itself.
+    fn snapshot(&self) -> Snapshot {
+        let items = self.all_items();
+        let album_ids: HashSet<ObjectId> =
+            items.iter().map(|item| item.parent_id.clone()).collect();
+        let artist_ids: HashSet<ObjectId> = album_ids
+            .iter()
+            .filter_map(|album_id| match self.index.entry(album_id) {
+                Some(Entry::Container(album)) => album.parent_id,
+                _ => None,
+            })
+            .filter(|id| *id != ObjectId::root())
+            .collect();
+        Snapshot {
+            items,
+            album_ids,
+            artist_ids,
+        }
+    }
+
     /// Every item in the tree, found by walking every container from the
-    /// root down. Fresh on every call — nothing here is cached.
+    /// root down. Callers go through `snapshot()`, which runs this once
+    /// per Browse call and shares the result - see its doc comment.
     fn all_items(&self) -> Vec<Item> {
         let mut items = Vec::new();
         let mut stack = vec![ObjectId::root()];
@@ -81,74 +110,54 @@ impl MusicLibraryView {
         items
     }
 
-    /// Groups every item by its containing folder — the real `parent_id`
-    /// each item already carries in the index.
-    fn group_by_album(&self) -> HashMap<ObjectId, Vec<Item>> {
+    /// Groups the snapshot's items by their containing folder - the real
+    /// `parent_id` each item already carries in the index.
+    fn group_by_album(snapshot: &Snapshot) -> HashMap<ObjectId, Vec<Item>> {
         let mut groups: HashMap<ObjectId, Vec<Item>> = HashMap::new();
-        for item in self.all_items() {
-            groups.entry(item.parent_id.clone()).or_default().push(item);
+        for item in &snapshot.items {
+            groups
+                .entry(item.parent_id.clone())
+                .or_default()
+                .push(item.clone());
         }
         groups
     }
 
-    fn all_songs(&self) -> Vec<Entry> {
-        let mut items = self.all_items();
+    fn all_songs(snapshot: &Snapshot) -> Vec<Entry> {
+        let mut items = snapshot.items.clone();
         items.sort_by(|a, b| a.title.cmp(&b.title));
         items.into_iter().map(Entry::Item).collect()
-    }
-
-    /// The set of container IDs that directly hold at least one track —
-    /// what "album" means under the folder-structure heuristic (see this
-    /// module's doc comment).
-    fn album_ids(&self) -> HashSet<ObjectId> {
-        self.all_items()
-            .into_iter()
-            .map(|item| item.parent_id)
-            .collect()
-    }
-
-    /// The set of container IDs one level above an album — what
-    /// "artist" means under the same heuristic. An album with no real
-    /// folder above it (only the root) has no artist and is left out.
-    fn artist_ids(&self) -> HashSet<ObjectId> {
-        self.album_ids()
-            .iter()
-            .filter_map(|album_id| match self.index.entry(album_id) {
-                Some(Entry::Container(album)) => album.parent_id,
-                _ => None,
-            })
-            .filter(|id| *id != ObjectId::root())
-            .collect()
     }
 
     /// An album's displayed `childCount` must match what browsing into it
     /// actually returns: its track count, not the real folder's full
     /// child count (which can also include sub-folders — separate
     /// albums, not this one's content; see `tracks_of_album`).
-    fn albums(&self) -> Vec<Entry> {
-        containers_for(&self.index, self.album_ids())
+    fn albums(&self, snapshot: &Snapshot) -> Vec<Entry> {
+        containers_for(&self.index, snapshot.album_ids.clone())
             .into_iter()
-            .map(|entry| self.with_real_child_count(entry, Self::tracks_of_album))
+            .map(|entry| self.with_real_child_count(entry, snapshot, Self::tracks_of_album))
             .collect()
     }
 
     /// Same correction as `albums`, but counting an artist's albums
     /// instead of an album's tracks.
-    fn artists(&self) -> Vec<Entry> {
-        containers_for(&self.index, self.artist_ids())
+    fn artists(&self, snapshot: &Snapshot) -> Vec<Entry> {
+        containers_for(&self.index, snapshot.artist_ids.clone())
             .into_iter()
-            .map(|entry| self.with_real_child_count(entry, Self::albums_under_artist))
+            .map(|entry| self.with_real_child_count(entry, snapshot, Self::albums_under_artist))
             .collect()
     }
 
     fn with_real_child_count(
         &self,
         entry: Entry,
-        count_children: impl Fn(&Self, &ObjectId) -> Option<Vec<Entry>>,
+        snapshot: &Snapshot,
+        count_children: impl Fn(&Self, &Snapshot, &ObjectId) -> Option<Vec<Entry>>,
     ) -> Entry {
         match entry {
             Entry::Container(mut container) => {
-                container.child_count = count_children(self, &container.id)
+                container.child_count = count_children(self, snapshot, &container.id)
                     .map(|children| children.len())
                     .unwrap_or(0);
                 Entry::Container(container)
@@ -161,8 +170,8 @@ impl MusicLibraryView {
     /// with any sub-folder dropped. A sub-folder under an album is
     /// itself a separate album (see this module's doc comment), not more
     /// of this one's content. `None` if `id` isn't a real album.
-    fn tracks_of_album(&self, id: &ObjectId) -> Option<Vec<Entry>> {
-        if !self.album_ids().contains(id) {
+    fn tracks_of_album(&self, snapshot: &Snapshot, id: &ObjectId) -> Option<Vec<Entry>> {
+        if !snapshot.album_ids.contains(id) {
             return None;
         }
         let mut tracks: Vec<Entry> = self
@@ -186,18 +195,19 @@ impl MusicLibraryView {
     /// both roles at once. Its own directly-held track is the cost: it
     /// won't appear in this view. Same kind of trade-off as the
     /// orphan-track exclusion this module's doc comment describes.
-    fn albums_under_artist(&self, id: &ObjectId) -> Option<Vec<Entry>> {
-        if !self.artist_ids().contains(id) {
+    fn albums_under_artist(&self, snapshot: &Snapshot, id: &ObjectId) -> Option<Vec<Entry>> {
+        if !snapshot.artist_ids.contains(id) {
             return None;
         }
-        let album_ids = self.album_ids();
-        let artist_ids = self.artist_ids();
         let mut albums: Vec<Container> = self
             .index
             .children(id)?
             .into_iter()
             .filter_map(|entry| match entry {
-                Entry::Container(c) if album_ids.contains(&c.id) && !artist_ids.contains(&c.id) => {
+                Entry::Container(c)
+                    if snapshot.album_ids.contains(&c.id)
+                        && !snapshot.artist_ids.contains(&c.id) =>
+                {
                     Some(c)
                 }
                 _ => None,
@@ -205,7 +215,7 @@ impl MusicLibraryView {
             .collect();
         for album in &mut albums {
             album.child_count = self
-                .tracks_of_album(&album.id)
+                .tracks_of_album(snapshot, &album.id)
                 .map(|tracks| tracks.len())
                 .unwrap_or(0);
         }
@@ -213,12 +223,13 @@ impl MusicLibraryView {
         Some(albums.into_iter().map(Entry::Container).collect())
     }
 
-    fn recently_added_songs(&self, count: u32, max_age_days: u32) -> Vec<Entry> {
+    fn recently_added_songs(snapshot: &Snapshot, count: u32, max_age_days: u32) -> Vec<Entry> {
         let cutoff = age_cutoff(max_age_days);
-        let mut items: Vec<Item> = self
-            .all_items()
-            .into_iter()
+        let mut items: Vec<Item> = snapshot
+            .items
+            .iter()
             .filter(|item| is_recent_enough(item.modified, cutoff))
+            .cloned()
             .collect();
         items.sort_by_key(|item| std::cmp::Reverse(item.modified));
         items.truncate(count as usize);
@@ -228,17 +239,21 @@ impl MusicLibraryView {
     /// An album counts as "recently added" by its newest track's date —
     /// adding a few new tracks to an existing album should bring the
     /// whole album back to the top, not just the new tracks.
-    fn recently_added_albums(&self, count: u32, max_age_days: u32) -> Vec<Entry> {
+    fn recently_added_albums(
+        &self,
+        snapshot: &Snapshot,
+        count: u32,
+        max_age_days: u32,
+    ) -> Vec<Entry> {
         let cutoff = age_cutoff(max_age_days);
-        let mut dated: Vec<(Container, SystemTime)> = self
-            .group_by_album()
+        let mut dated: Vec<(Container, SystemTime)> = Self::group_by_album(snapshot)
             .into_iter()
             .filter_map(|(album_id, items)| {
                 let Entry::Container(mut container) = self.index.entry(&album_id)? else {
                     return None;
                 };
                 container.child_count = self
-                    .tracks_of_album(&album_id)
+                    .tracks_of_album(snapshot, &album_id)
                     .map(|tracks| tracks.len())
                     .unwrap_or(0);
                 let newest = items.iter().map(|item| item.modified).max()?;
@@ -255,6 +270,15 @@ impl MusicLibraryView {
     }
 }
 
+/// Everything derived from one walk of the whole tree - computed once per
+/// Browse call by `snapshot()`, then shared. See that method's doc
+/// comment for why this exists.
+struct Snapshot {
+    items: Vec<Item>,
+    album_ids: HashSet<ObjectId>,
+    artist_ids: HashSet<ObjectId>,
+}
+
 impl ContentSource for MusicLibraryView {
     fn children(&self, id: &ObjectId) -> Option<Vec<Entry>> {
         if *id == ObjectId::root() {
@@ -264,10 +288,14 @@ impl ContentSource for MusicLibraryView {
             // Both the plain Albums view and each album inside Recently
             // Added Albums show the same thing one level down: that
             // album's own tracks.
-            Mode::Albums | Mode::RecentlyAddedAlbums { .. } => self.tracks_of_album(id),
-            Mode::Artists => self
-                .albums_under_artist(id)
-                .or_else(|| self.tracks_of_album(id)),
+            Mode::Albums | Mode::RecentlyAddedAlbums { .. } => {
+                self.tracks_of_album(&self.snapshot(), id)
+            }
+            Mode::Artists => {
+                let snapshot = self.snapshot();
+                self.albums_under_artist(&snapshot, id)
+                    .or_else(|| self.tracks_of_album(&snapshot, id))
+            }
             Mode::AllSongs | Mode::RecentlyAddedSongs { .. } => None,
         }
     }
@@ -297,16 +325,18 @@ impl ContentSource for MusicLibraryView {
         if matches!(
             self.mode,
             Mode::Albums | Mode::Artists | Mode::RecentlyAddedAlbums { .. }
-        ) && self.album_ids().contains(id)
-        {
-            let mut entry = self.index.entry(id)?;
-            if let Entry::Container(container) = &mut entry {
-                container.child_count = self
-                    .tracks_of_album(id)
-                    .map(|tracks| tracks.len())
-                    .unwrap_or(0);
+        ) {
+            let snapshot = self.snapshot();
+            if snapshot.album_ids.contains(id) {
+                let mut entry = self.index.entry(id)?;
+                if let Entry::Container(container) = &mut entry {
+                    container.child_count = self
+                        .tracks_of_album(&snapshot, id)
+                        .map(|tracks| tracks.len())
+                        .unwrap_or(0);
+                }
+                return Some(entry);
             }
-            return Some(entry);
         }
         self.index.entry(id)
     }
