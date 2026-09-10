@@ -1,11 +1,12 @@
 #![forbid(unsafe_code)]
 
-mod config;
-
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use config::Config;
+use dlna_rs::config::Config;
+use dlna_rs::core::net;
+use dlna_rs::core::ssdp::Ssdp;
+use uuid::Uuid;
 
 struct Args {
     config_path: PathBuf,
@@ -51,7 +52,7 @@ fn print_usage() {
     );
 }
 
-fn init_logging(config: &config::LoggingConfig) {
+fn init_logging(config: &dlna_rs::config::LoggingConfig) {
     let mut builder = env_logger::Builder::new();
     let default_level: log::LevelFilter = config
         .level
@@ -62,6 +63,17 @@ fn init_logging(config: &config::LoggingConfig) {
         builder.parse_filters(&rust_log);
     }
     builder.init();
+}
+
+/// Resolves `server.uuid`: a fixed UUID if one was configured, otherwise a
+/// fresh one generated for this run. Config validation already confirmed
+/// this is either "auto" or a valid UUID, so parsing here can't fail.
+fn resolve_uuid(configured: &str) -> Uuid {
+    if configured.eq_ignore_ascii_case("auto") {
+        Uuid::new_v4()
+    } else {
+        Uuid::parse_str(configured).expect("config validation already checked this parses")
+    }
 }
 
 async fn wait_for_shutdown() {
@@ -107,7 +119,47 @@ async fn main() -> ExitCode {
     log::info!("loaded config from {}", args.config_path.display());
     log::debug!("{config:#?}");
 
+    let interface_addr = match net::interface_ipv4(&config.server.interface) {
+        Ok(addr) => addr,
+        Err(err) => {
+            log::error!("{err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let uuid = resolve_uuid(&config.server.uuid);
+    let location = format!(
+        "http://{interface_addr}:{port}/description.xml",
+        port = config.server.port
+    );
+    log::info!("device uuid: {uuid}, location: {location}");
+
+    let ssdp = match Ssdp::bind(interface_addr, uuid, location, config.ssdp.max_age()).await {
+        Ok(ssdp) => ssdp,
+        Err(err) => {
+            log::error!("failed to bind SSDP socket: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    ssdp.announce_alive().await;
+    log::info!("SSDP responder listening on 239.255.255.250:1900");
+
+    let responder = tokio::spawn({
+        let ssdp = ssdp.clone();
+        async move { ssdp.serve_search_requests().await }
+    });
+    let announcer = tokio::spawn({
+        let ssdp = ssdp.clone();
+        let interval = config.ssdp.notify_interval;
+        async move { ssdp.announce_alive_periodically(interval).await }
+    });
+
     wait_for_shutdown().await;
+
+    responder.abort();
+    announcer.abort();
+    ssdp.announce_byebye().await;
+    log::info!("sent ssdp:byebye, exiting");
 
     ExitCode::SUCCESS
 }

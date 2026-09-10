@@ -52,14 +52,43 @@ project is trying to avoid.
 
 ## Current state
 
-Phase 1 is done: the binary parses CLI args, loads and validates
+Phases 1 and 2 are done. The binary parses CLI args, loads and validates
 `dlna-rs.toml` (full schema, `deny_unknown_fields` everywhere, fails loudly
-on a bad port/UUID/log-level/view name), logs what it loaded, and shuts
-down cleanly on SIGTERM/SIGINT. None of the `ContentSource`/`ByteSource`/
-`MetadataProvider` traits exist yet — that starts in Phase 4.
+on a bad port/UUID/log-level/view name), and shuts down cleanly on
+SIGTERM/SIGINT. On top of that, it now answers SSDP discovery: it joins
+the `239.255.255.250:1900` multicast group on the configured interface,
+answers `M-SEARCH` for all five identities it advertises (root device,
+UUID, device type, ContentDirectory, ConnectionManager), re-announces
+`ssdp:alive` on a configurable interval, and sends `ssdp:byebye` on
+shutdown. `src/core/ssdp/message.rs` holds the pure parse/build functions;
+`src/core/ssdp/mod.rs` is the socket plumbing around them; `src/core/net.rs`
+resolves a configured interface name to its IPv4 address (needed both for
+joining the right multicast interface and for building the LOCATION URL).
+
+Verified against a real LAN, not just unit tests: `examples/ssdp_discover.rs`
+sends an M-SEARCH and prints every response, `examples/ssdp_monitor.rs`
+passively watches all SSDP multicast traffic. Both are checked-in tools for
+repeatable manual verification, not one-off scripts — run them again
+whenever SSDP behavior needs a real-world sanity check.
+
+None of the `ContentSource`/`ByteSource`/`MetadataProvider` traits exist
+yet — that starts in Phase 4.
 
 See [`PLAN.md`](PLAN.md) for what's next and why the phases are ordered the
 way they are.
+
+## Two things not in the original spec
+
+- **`[ssdp] notify_interval`** — the spec called for a configurable NOTIFY
+  interval but never added the config table for it. Added in Phase 2;
+  `CACHE-CONTROL: max-age` on every advertisement is derived as twice this
+  value.
+- **`if-addrs` and `socket2` dependencies** — needed for interface-name-to-IP
+  resolution and for `SO_REUSEADDR`/`SO_REUSEPORT` (so other UPnP software
+  on the same host can share port 1900), neither of which the original
+  crate table anticipated. Both are small, pure-Rust-facing wrappers; the
+  unsafe FFI they do internally doesn't touch `forbid(unsafe_code)` in our
+  own crates.
 
 ## Config
 

@@ -9,6 +9,8 @@ use serde::Deserialize;
 pub struct Config {
     pub server: ServerConfig,
     pub media: MediaConfig,
+    #[serde(default)]
+    pub ssdp: SsdpConfig,
     // Read by the music library views (Phase 8).
     #[serde(default)]
     #[allow(dead_code)]
@@ -23,10 +25,10 @@ pub struct Config {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-// friendly_name/interface are read once device description generation
-// lands in Phase 3 (see docs/PLAN.md); only Debug-logged for now.
-#[allow(dead_code)]
 pub struct ServerConfig {
+    // Read once device description generation lands in Phase 3; only
+    // Debug-logged for now.
+    #[allow(dead_code)]
     pub friendly_name: String,
     pub port: u16,
     pub interface: String,
@@ -34,6 +36,31 @@ pub struct ServerConfig {
     /// a fixed UUID string. Validated at load time; resolved into an actual
     /// `uuid::Uuid` where it's needed (device description generation).
     pub uuid: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct SsdpConfig {
+    /// How often to re-send NOTIFY ssdp:alive. `CACHE-CONTROL: max-age` on
+    /// every advertisement is derived from this (twice the interval), so a
+    /// single missed announcement doesn't cause premature expiry on a
+    /// control point.
+    #[serde(with = "humantime_serde")]
+    pub notify_interval: Duration,
+}
+
+impl SsdpConfig {
+    pub fn max_age(&self) -> u32 {
+        u32::try_from(self.notify_interval.as_secs().saturating_mul(2)).unwrap_or(u32::MAX)
+    }
+}
+
+impl Default for SsdpConfig {
+    fn default() -> Self {
+        SsdpConfig {
+            notify_interval: Duration::from_secs(15 * 60),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -264,6 +291,8 @@ mod tests {
         let (_dir, path) = write_config(MINIMAL);
         let config = Config::load(&path).expect("minimal config should load");
         assert_eq!(config.rescan.interval, Duration::from_secs(4 * 60 * 60));
+        assert_eq!(config.ssdp.notify_interval, Duration::from_secs(15 * 60));
+        assert_eq!(config.ssdp.max_age(), 30 * 60);
         assert_eq!(config.logging.level, "info");
         assert_eq!(config.library.recently_added.songs_count, 50);
         assert_eq!(config.library.views.len(), 5);

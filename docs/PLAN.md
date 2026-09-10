@@ -74,18 +74,39 @@ config file, logs the parsed result, and exits 0 on SIGTERM.
 
 **Goal:** the server is discoverable on the LAN.
 
-- [ ] Join multicast on `239.255.255.250:1900`.
-- [ ] Respond to `M-SEARCH` for `ssdp:all`, `upnp:rootdevice`,
+- [x] Join multicast on `239.255.255.250:1900` (`src/core/ssdp/mod.rs`,
+      `Ssdp::bind`). Binds with `SO_REUSEADDR`/`SO_REUSEPORT` via `socket2`
+      — port 1900 is a shared well-known port, and other UPnP software on
+      the same host should be able to bind it too.
+- [x] Respond to `M-SEARCH` for `ssdp:all`, `upnp:rootdevice`,
       `urn:schemas-upnp-org:device:MediaServer:1`, and
-      `urn:schemas-upnp-org:service:ContentDirectory:1`.
-- [ ] Periodic `NOTIFY` (`ssdp:alive`) on a configurable interval.
-- [ ] `ssdp:byebye` on SIGTERM.
-- [ ] Confirm empirically whether binding UDP 1900 needs any privilege on
-      the target kernels (Arch, Ubuntu); document the answer.
-- [ ] `fuzz/fuzz_targets/ssdp_parse.rs` skeleton.
+      `urn:schemas-upnp-org:service:ContentDirectory:1`. Went slightly
+      further than the literal list: also matches on the device's own
+      `uuid:...` and on `urn:schemas-upnp-org:service:ConnectionManager:1`,
+      since a spec-correct root device advertises all of its own
+      identities under `ssdp:all`/NOTIFY regardless of which ones get
+      called out as individually-searchable — see `src/core/ssdp/targets.rs`.
+- [x] Periodic `NOTIFY` (`ssdp:alive`) on a configurable interval
+      (`ssdp.notify_interval` in config, new table — not in the original
+      spec's config example, added here since the SSDP section always
+      called for it). `CACHE-CONTROL: max-age` is derived as twice the
+      interval.
+- [x] `ssdp:byebye` on SIGTERM (`main.rs` calls `Ssdp::announce_byebye`
+      after the shutdown signal fires).
+- [x] Confirmed empirically: binding UDP 1900 and joining the multicast
+      group need no elevated privilege on this host (Arch, kernel 7.2,
+      unprivileged uid) — resolves spec open question #2.
+- [x] `fuzz/fuzz_targets/ssdp_parse.rs`. Not just a skeleton — ran it for
+      real (`cargo +nightly fuzz run ssdp_parse -- -max_total_time=30`),
+      31M executions, no crashes.
 
 **Exit criterion:** an SSDP client (`gssdp-discover` or equivalent) finds
-the server and gets a correct `M-SEARCH` response.
+the server and gets a correct `M-SEARCH` response. Verified against real
+traffic on a live LAN with `examples/ssdp_discover.rs` and
+`examples/ssdp_monitor.rs` (both checked in as reusable manual-testing
+tools, not one-off scripts) — `dlna-rs` answered `ssdp:all` with exactly
+its 5 advertised identities, alongside real responses from an actual
+MiniDLNA instance and a hardware renderer already on the network.
 
 ---
 

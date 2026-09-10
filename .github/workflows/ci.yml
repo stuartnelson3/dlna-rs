@@ -65,6 +65,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
 
-# Fuzz smoke tests (60-120s per target, per docs/PLAN.md Phase 9) get added
-# here once the fuzz targets themselves exist (fuzz/fuzz_targets/, starting
-# in Phase 2). No point wiring up a job with nothing to run yet.
+  fuzz-smoke:
+    name: fuzz smoke (ssdp_parse)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
+      - run: cargo install cargo-fuzz --locked
+      - run: cargo fuzz run ssdp_parse -- -max_total_time=90
+
+# More targets (soap_parse, range_parse, path_resolve) get added to the
+# fuzz-smoke job above as they're written, starting in Phase 5/6.

@@ -42,17 +42,25 @@ LAN attacker can actually hit.
    `ObjectID` that doesn't match any `ContentSource`'s prefix fails closed
    (not-found), never a panic or an out-of-bounds index.
 
-None of these three exist yet in code — they land in Phases 2, 5, and 6 of
-`PLAN.md`. This document gets updated with real file/line references once
-they do.
+   **SSDP parsing is implemented** (`src/core/ssdp/message.rs`,
+   `parse_search_request`): a hard 2KB size cap before any parsing happens,
+   rejects anything that isn't valid UTF-8 or a well-formed M-SEARCH
+   request-line, returns `Result` rather than panicking on any malformed
+   input. Fuzzed with `fuzz/fuzz_targets/ssdp_parse.rs` — 31M executions in
+   a 30s local run, no crashes (see `docs/PLAN.md` Phase 2). SOAP body
+   parsing and the ObjectID namespace don't exist yet; they land in
+   Phase 5.
+
+Path resolution and Range parsing don't exist yet either — Phase 6.
 
 ## Process-level hardening
 
 - Never requires root. `server.port` above 1024 is enforced at config-load
   time (`ConfigError::PrivilegedPort`, in `src/config.rs`) — the binary
   should never need `CAP_NET_BIND_SERVICE`. SSDP's port 1900 is UDP;
-  whether binding it needs any privilege on the target kernels is still an
-  open question, tracked in Phase 2 of `PLAN.md`.
+  confirmed empirically (Phase 2) that binding it and joining the
+  multicast group need no elevated privilege on Linux for an ordinary
+  user process.
 - `#![forbid(unsafe_code)]` at the crate root (`src/main.rs`). Dependencies
   are audited separately, not held to the same bar — a `cargo geiger` pass
   is a periodic check on what unsafe exists in the dependency tree, not a

@@ -11,6 +11,9 @@ directories = [
 follow_symlinks = false
 exclude_patterns = ["*.tmp", ".*"]
 
+[ssdp]
+notify_interval = "15m"
+
 [library]
 views = ["folders", "albums", "artists", "recently_added_songs", "recently_added_albums"]
 
