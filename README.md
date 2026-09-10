@@ -13,8 +13,11 @@ casting, no web UI, no accounts.
 
 ## Status
 
-Nothing's built yet. The design is done; see [`docs/PLAN.md`](docs/PLAN.md)
-for the phased plan this repo is tracking instead of GitHub issues.
+Config loading and SSDP discovery work: it joins the LAN multicast group,
+answers `M-SEARCH`, and re-announces itself on a timer. It's discoverable
+but not yet playable — no ContentDirectory service or file serving yet.
+See [`docs/PLAN.md`](docs/PLAN.md) for the phased plan this repo is
+tracking instead of GitHub issues.
 
 ## What it does
 
@@ -33,7 +36,15 @@ exposure only — this isn't meant to be port-forwarded to the internet.
 
 ## Building
 
-Nothing to build yet — check back after Phase 0 in `docs/PLAN.md`.
+```
+cargo build --release
+cp examples/dlna-rs.example.toml dlna-rs.toml   # edit paths/interface for your setup
+./target/release/dlna-rs --config dlna-rs.toml
+```
+
+`examples/ssdp_discover.rs` and `examples/ssdp_monitor.rs` are small
+standalone tools for poking at SSDP traffic on your LAN while developing —
+run them with `cargo run --example ssdp_discover`.
 
 ## Docs
 
