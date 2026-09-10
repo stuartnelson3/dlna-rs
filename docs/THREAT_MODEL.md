@@ -119,9 +119,14 @@ LAN attacker can actually hit.
   request from an untrusted LAN client — into a full-process crash. That's
   a real availability risk for a network-facing daemon, so it's a
   deliberate choice, not an oversight.
-- A systemd unit with real hardening directives (`NoNewPrivileges`,
-  `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`, and friends) ships
-  with the project — not yet written; tracked in Phase 9 of `PLAN.md`.
+- A systemd unit with real hardening directives ships with the project:
+  `systemd/dlna-rs.service`. Every sandboxing directive in it was tested
+  against a real running instance under `systemd-run --user`, including
+  a negative control that proved `RestrictAddressFamilies` needs
+  `AF_NETLINK` (interface resolution fails loudly without it, not
+  silently). See Phase 9 of `PLAN.md` for the full verification log,
+  and the unit file's own comments for the `DynamicUser` vs. static-user
+  decision.
 
 ## What's explicitly not in scope
 

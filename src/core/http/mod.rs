@@ -458,4 +458,82 @@ mod tests {
             proptest::prop_assert!(result.is_ok());
         }
     }
+
+    /// A `ContentSource` that panics on one specific ID and behaves
+    /// normally otherwise - built to prove, against a real running
+    /// server, that the per-connection task in `serve()` really does
+    /// isolate a panic (see docs/THREAT_MODEL.md's panic policy and
+    /// `Cargo.toml`'s `panic = "unwind"` comment). Only usable from this
+    /// test module - it names `ContentSource` directly, which nothing
+    /// outside `core` may do (see docs/DESIGN.md's encapsulation rule).
+    struct PanicsOnBoom;
+
+    impl ContentSource for PanicsOnBoom {
+        fn children(&self, _id: &ObjectId) -> Option<Vec<Entry>> {
+            Some(Vec::new())
+        }
+
+        fn entry(&self, id: &ObjectId) -> Option<Entry> {
+            if id.as_str() == "boom" {
+                panic!("deliberate panic for the panic-isolation test");
+            }
+            Some(Entry::Container(crate::index::Container {
+                id: ObjectId::root(),
+                parent_id: None,
+                title: String::new(),
+                child_count: 0,
+            }))
+        }
+    }
+
+    fn browse_metadata_body(object_id: &str) -> String {
+        format!(
+            r#"<?xml version="1.0"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><u:Browse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1"><ObjectID>{object_id}</ObjectID><BrowseFlag>BrowseMetadata</BrowseFlag><Filter>*</Filter><StartingIndex>0</StartingIndex><RequestedCount>0</RequestedCount><SortCriteria></SortCriteria></u:Browse></s:Body></s:Envelope>"#
+        )
+    }
+
+    #[tokio::test]
+    async fn a_panic_in_one_connection_task_does_not_take_down_the_server() {
+        let server = HttpServer::bind(
+            Ipv4Addr::LOCALHOST,
+            0,
+            "panic-test".to_string(),
+            Uuid::new_v4(),
+            PanicsOnBoom,
+            crate::transform::passthrough::PassthroughSource,
+            Vec::new(),
+        )
+        .await
+        .expect("failed to bind test HTTP server");
+        let addr = server.local_addr().unwrap();
+        tokio::spawn(server.serve());
+
+        let client = reqwest::Client::new();
+
+        // BrowseMetadata on "boom" reaches PanicsOnBoom::entry, which
+        // panics. That connection's own task dies mid-response, so the
+        // client sees a network error, not an HTTP response of any
+        // status - a panicking handler must never look like success.
+        let panicking = client
+            .post(format!("http://{addr}/ContentDirectory/control"))
+            .body(browse_metadata_body("boom"))
+            .send()
+            .await;
+        assert!(
+            panicking.is_err(),
+            "a panicking handler should drop the connection, not answer normally"
+        );
+
+        // A fresh request, a fresh connection: it must still succeed.
+        // The accept loop and every other task are untouched by the
+        // panic above - that's the whole point of one task per
+        // connection.
+        let recovered = client
+            .post(format!("http://{addr}/ContentDirectory/control"))
+            .body(browse_metadata_body("anything-else"))
+            .send()
+            .await
+            .expect("the server must still be serving other connections");
+        assert_eq!(recovered.status(), 200);
+    }
 }

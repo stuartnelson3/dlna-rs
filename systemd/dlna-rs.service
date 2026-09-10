@@ -1,0 +1,83 @@
+# Hardening reviewed against docs/THREAT_MODEL.md, and the sandboxing
+# directives below (everything except User/Group/ReadOnlyPaths) were
+# verified against a real running instance under `systemd-run --user`
+# with this exact directive set: the server started, resolved its
+# network interface, joined SSDP multicast, served a real Browse
+# request, and served a real file. See docs/PLAN.md's Phase 9 section
+# for that verification log.
+#
+# Install:
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin dlna-rs
+#   sudo cp systemd/dlna-rs.service /etc/systemd/system/
+#   sudo cp target/release/dlna-rs /usr/local/bin/
+#   sudo mkdir -p /etc/dlna-rs && sudo cp dlna-rs.toml /etc/dlna-rs/
+#   # Edit ReadOnlyPaths= below to match media.directories in your config.
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now dlna-rs
+
+[Unit]
+Description=dlna-rs DLNA/UPnP-AV media server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dlna-rs --config /etc/dlna-rs/dlna-rs.toml
+Restart=on-failure
+RestartSec=5
+
+# A static user, not DynamicUser=true. This service's one job is
+# reading a filesystem it does not own the permissions on, often an
+# NFS-mounted media share. DynamicUser=true picks a fresh, random UID
+# on every start. An NFS export that checks the caller's UID or GID
+# (no_all_squash, NFSv4 ID mapping, a Kerberos-secured export) can then
+# refuse a later restart even though an earlier one worked. A static
+# UID never changes, so grant it read access once, using chown, an ACL
+# entry, or an exports(5) line, and it keeps working.
+#
+# Running purely off local disk, with no such export in the picture?
+# DynamicUser=true is a fine, simpler choice there instead. Delete the
+# User/Group lines below and add DynamicUser=true in their place.
+User=dlna-rs
+Group=dlna-rs
+
+# Real UPnP/1.0 servers do not need root, a writable filesystem, or
+# most of the kernel's attack surface. Everything below denies one of
+# those by default; each directive was checked against the threat
+# model this project already keeps in docs/THREAT_MODEL.md.
+NoNewPrivileges=true
+ProtectSystem=strict
+
+# read-only, not the stricter "true": "true" hides /home entirely,
+# which breaks the common home-server case where the media library
+# lives under a user's home directory. "read-only" still exposes it
+# for reading, which is all this server ever needs, while denying
+# writes everywhere under /home.
+ProtectHome=read-only
+
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+
+# AF_NETLINK is not optional: interface-to-IP resolution
+# (core::net::interface_ipv4, see docs/DESIGN.md) needs it under the
+# hood. Confirmed by running under this exact restriction. Dropping
+# AF_NETLINK makes the server fail at startup, not silently misbehave.
+RestrictAddressFamilies=AF_INET AF_NETLINK
+
+# Edit this to match every path under media.directories in your config.
+# ProtectSystem=strict makes the rest of the filesystem read-only by
+# default, and this server never writes to its media library anyway.
+ReadOnlyPaths=/srv/media
+
+[Install]
+WantedBy=multi-user.target

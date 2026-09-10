@@ -603,19 +603,83 @@ this feature exists to avoid) — met, verified above with a
 SSDP/SOAP parsing) hold up under adversarial input, and the process itself
 is hardened.
 
-- [ ] All four fuzz targets run crash-free for a sustained local run (not
-      just the CI smoke duration).
-- [ ] `cargo geiger` baseline report reviewed.
-- [ ] systemd unit with the hardening directives from the threat model
+- [x] All four fuzz targets run crash-free for a sustained local run (not
+      just the CI smoke duration). `cargo fuzz run <target> --
+      -max_total_time=120`, all four, no crash, no hang:
+
+      | target | executions | duration |
+      |---|---|---|
+      | `ssdp_parse` | 118,031,297 | 121s |
+      | `soap_parse` | 5,443,177 | 121s |
+      | `range_parse` | 121,125,634 | 121s |
+      | `path_resolve` | 122,048,276 | 121s |
+
+      `soap_parse`'s lower rate matches Phase 5's own note that XML
+      parsing costs more per input than the other three's plain string
+      parsing. That is not a red flag. It is the same shape as every
+      prior fuzz session this project has run.
+- [x] `cargo geiger` baseline report reviewed. `dlna-rs 0.1.0` itself
+      reports `0/0` on every column (functions, expressions, impls,
+      traits, methods). This confirms, with an independent tool, what
+      `#![forbid(unsafe_code)]` already guarantees at compile time for
+      our own code. The dependency tree carries real unsafe code, mostly
+      in `tokio`, `bytes`, `memchr`, `http`, and `socket2`. That is
+      expected: I/O and byte-level parsing are exactly where unsafe buys
+      real performance. This matches docs/THREAT_MODEL.md's existing
+      stance: geiger is a periodic look at the dependency tree, not a
+      CI gate, since a raw count of unsafe blocks says nothing about
+      whether any of them are wrong.
+- [x] systemd unit with the hardening directives from the threat model
       (`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`,
-      `PrivateTmp`, etc.).
-- [ ] Resolve `DynamicUser=true` vs. a static service user, specifically
-      against an NFS-mounted media directory.
-- [ ] Confirm the release profile has `panic = "unwind"`, and that a panic
-      in one connection task doesn't take down the process.
+      `PrivateTmp`, etc.). **`systemd/dlna-rs.service`.** Every
+      sandboxing directive in it (all but `User`/`Group`/`ReadOnlyPaths`,
+      which need a real deployment to check) was tested against a real
+      running instance, not just written from documentation. A
+      transient unit under `systemd-run --user` used the full directive
+      set: `NoNewPrivileges`, `ProtectSystem=strict`,
+      `ProtectHome=read-only`, `PrivateTmp`, `ProtectKernelTunables`,
+      `ProtectKernelModules`, `ProtectKernelLogs`, `ProtectControlGroups`,
+      `ProtectClock`, `ProtectHostname`, `RestrictSUIDSGID`,
+      `RestrictRealtime`, `LockPersonality`, `MemoryDenyWriteExecute`,
+      `RemoveIPC`, and `RestrictAddressFamilies=AF_INET AF_NETLINK`. It
+      started cleanly, resolved its network interface, joined SSDP
+      multicast, served a real `BrowseDirectChildren` request, and
+      served `description.xml`. A second run with
+      `RestrictAddressFamilies=AF_INET` alone (no `AF_NETLINK`) is the
+      negative control: it failed loudly at startup with `no IPv4
+      address found for interface "lo"`. This proves `if-addrs`'
+      interface resolution genuinely needs `AF_NETLINK`, and that
+      dropping it fails safe: a clear error, not a silent misbehavior.
+      Worth confirming directly; documentation alone would only be a
+      guess.
+- [x] Resolve `DynamicUser=true` vs. a static service user, specifically
+      against an NFS-mounted media directory. **A static user.**
+      `DynamicUser=true` picks a fresh, random UID on every start. An NFS
+      export that checks the caller's UID or GID can then refuse access
+      on a later restart even though an earlier one worked, since the
+      export was never told about this run's UID. Real, common setups
+      do exactly this: `no_all_squash`, NFSv4 ID mapping, a
+      Kerberos-secured export. A static, named user's UID never changes,
+      so the operator grants it read access once, using `chown`, an
+      ACL entry, or an `exports(5)` line, and it keeps working across
+      restarts. The shipped unit documents `DynamicUser=true` as a fine
+      alternative for a purely local-disk setup, where this risk does
+      not apply. The tradeoff is named, not silently picked.
+- [x] Confirm the release profile has `panic = "unwind"`, and that a panic
+      in one connection task doesn't take down the process. `Cargo.toml`
+      already had `panic = "unwind"` with this exact reasoning in a
+      comment (from Phase 0). The "doesn't take down the process" half
+      is now a real test, not just a read of `serve()`'s doc comment:
+      `core::http::tests::a_panic_in_one_connection_task_does_not_take_down_the_server`
+      binds a real `HttpServer` with a `ContentSource` that panics on
+      one specific ID, sends a request that hits it, and confirms the
+      connection drops. That is the correct outcome: a panicking
+      handler must never look like a normal response. A second request,
+      on a fresh connection, still gets a normal `200`.
 
 **Exit criterion:** fuzz targets run 60–120 seconds crash-free locally; the
-systemd unit is reviewed against the threat model line by line.
+systemd unit is reviewed against the threat model line by line. Met. See
+the evidence above.
 
 ---
 
