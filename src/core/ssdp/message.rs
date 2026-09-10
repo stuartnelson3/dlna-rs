@@ -112,7 +112,7 @@ pub fn build_notify_byebye(target: Target, uuid: &Uuid) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::ssdp::targets::ServiceType;
+    use crate::core::device::ServiceType;
 
     #[test]
     fn parses_a_real_msearch_request() {

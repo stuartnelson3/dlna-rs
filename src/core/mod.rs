@@ -2,5 +2,7 @@
 //! same no matter how the media library is organized or whether bytes get
 //! transformed before serving. See docs/DESIGN.md for the full boundary.
 
+pub mod device;
+pub mod http;
 pub mod net;
 pub mod ssdp;

@@ -10,22 +10,7 @@
 
 use uuid::Uuid;
 
-const DEVICE_TYPE: &str = "urn:schemas-upnp-org:device:MediaServer:1";
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ServiceType {
-    ContentDirectory,
-    ConnectionManager,
-}
-
-impl ServiceType {
-    fn urn(self) -> &'static str {
-        match self {
-            ServiceType::ContentDirectory => "urn:schemas-upnp-org:service:ContentDirectory:1",
-            ServiceType::ConnectionManager => "urn:schemas-upnp-org:service:ConnectionManager:1",
-        }
-    }
-}
+use crate::core::device::{DEVICE_TYPE, ServiceType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {

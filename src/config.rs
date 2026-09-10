@@ -26,9 +26,6 @@ pub struct Config {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
-    // Read once device description generation lands in Phase 3; only
-    // Debug-logged for now.
-    #[allow(dead_code)]
     pub friendly_name: String,
     pub port: u16,
     pub interface: String,

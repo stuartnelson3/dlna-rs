@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use dlna_rs::config::Config;
+use dlna_rs::core::http::HttpServer;
 use dlna_rs::core::net;
 use dlna_rs::core::ssdp::Ssdp;
 use uuid::Uuid;
@@ -141,8 +142,27 @@ async fn main() -> ExitCode {
         }
     };
 
+    let http = match HttpServer::bind(
+        interface_addr,
+        config.server.port,
+        config.server.friendly_name.clone(),
+        uuid,
+    )
+    .await
+    {
+        Ok(http) => http,
+        Err(err) => {
+            log::error!("failed to bind HTTP server: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     ssdp.announce_alive().await;
     log::info!("SSDP responder listening on 239.255.255.250:1900");
+    log::info!(
+        "HTTP server listening on {interface_addr}:{}",
+        config.server.port
+    );
 
     let responder = tokio::spawn({
         let ssdp = ssdp.clone();
@@ -153,11 +173,13 @@ async fn main() -> ExitCode {
         let interval = config.ssdp.notify_interval;
         async move { ssdp.announce_alive_periodically(interval).await }
     });
+    let http_server = tokio::spawn(http.serve());
 
     wait_for_shutdown().await;
 
     responder.abort();
     announcer.abort();
+    http_server.abort();
     ssdp.announce_byebye().await;
     log::info!("sent ssdp:byebye, exiting");
 

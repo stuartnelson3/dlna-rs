@@ -118,54 +118,55 @@ MiniDLNA instance and a hardware renderer already on the network.
 dispatch machinery Phase 5 builds, so it moved there. ConnectionManager's
 SCPD — the *description* of those actions — still belongs here.)
 
-- [ ] Add `hyper` (1.x, features `http1`+`server`), `hyper-util` (feature
-      `tokio`, for the `TokioIo` adapter — hyper 1.x dropped its own
-      server loop), `http-body-util`, and `bytes`. Server is a plain
-      accept loop (`TcpListener` + `hyper::server::conn::http1`) with a
-      hand-written `service_fn` closure — no tower, no axum, per spec.
-- [ ] `core::device`: a small module holding what both SSDP and HTTP need
-      to agree on — `ServiceType` (`ContentDirectory`/`ConnectionManager`)
-      and the device type string. Move `ServiceType` here out of
-      `core::ssdp::targets` (it's not an SSDP concept, it's a device-model
-      concept SSDP happens to consume) so SCPD routing and SSDP
-      advertising can't drift apart by each defining their own copy.
-      Also owns the URL scheme every service gets: `/{service}/scpd.xml`,
+- [x] Added `hyper` (1.x, `http1`+`server`), `hyper-util` (`tokio`+`server`+
+      `http1`, for the `TokioIo` adapter — hyper 1.x dropped its own server
+      loop), `http-body-util`, `bytes`, and `quick-xml` (pulled forward
+      from Phase 5 — needed now to validate the static SCPD files at
+      test-time, and it'll be needed for SOAP/DIDL-Lite regardless).
+      Server is a plain accept loop (`TcpListener` + `hyper::server::conn::http1`)
+      with a hand-written `service_fn` closure — no tower, no axum.
+- [x] `core::device` (`src/core/device.rs`): `ServiceType` and the device
+      type string, moved out of `core::ssdp::targets` so SSDP advertising
+      and SCPD routing share one definition instead of two that could
+      drift apart. Owns the URL scheme: `/{service}/scpd.xml`,
       `/{service}/control` (Phase 5), `/{service}/event` (unimplemented —
-      not building GENA eventing for MVP; a `SUBSCRIBE` there just 404s,
-      which UPnP permits).
-- [ ] `core::http::description`: pure function building `/description.xml`
-      from config (`friendly_name`, resolved `uuid`) plus the resolved
-      interface IP/port (for the base URL) and `core::device`'s service
-      list. Manufacturer/model fields are hardcoded constants (`dlna-rs`,
-      repo URL, `CARGO_PKG_VERSION`) — not configurable; nobody asked for
-      that knob. No `presentationURL` — there's no web UI to point at.
-- [ ] `core::http::scpd`: **static** XML for `ContentDirectory` and
-      `ConnectionManager` (matches the spec's own wording — SCPD content
-      doesn't vary at runtime, so it's `include_str!`'d constants, not
-      generated). Publish the standard, spec-complete SCPD for both
-      service types, listing every action UPnP defines for them — not
-      just the ones Phase 5 implements. That's what a compliant device
-      does: SCPD says what's *knowable*, dispatch decides what's
-      *implemented*, and unimplemented-but-declared actions get a SOAP
-      fault (§5), not silence.
-- [ ] `core::http::router`: `fn route(method, path) -> Route` as a plain,
-      synchronous, unit-testable match — `Route::DeviceDescription`,
-      `Route::Scpd(ServiceType)`, `Route::NotFound`. The async handler is
-      a thin `match` on top of this pure decision. Sets the shape Phases 5
-      and 6 extend (more routes, not a different pattern).
-- [ ] Wire the HTTP server into `main.rs`: bind on the resolved interface
-      IP (not `0.0.0.0` — matches the LAN-only, one-configured-interface
-      model), spawn alongside the SSDP tasks, same abort-on-shutdown
-      treatment.
-- [ ] `tests/integration.rs`: add `reqwest` as a dev-dependency (per the
-      spec's testing strategy), bind the server on an ephemeral
-      `127.0.0.1` port, `GET` all three URLs, assert `200`, the right
-      `Content-Type`, and that the body parses as XML.
+      no GENA eventing for MVP; a `SUBSCRIBE` there just 404s via the
+      router's catch-all, which UPnP permits for a service that doesn't
+      support eventing).
+- [x] `core::http::description` (`src/core/http/description.rs`): pure
+      function building `/description.xml` from config (`friendly_name`,
+      resolved `uuid`) plus the resolved interface IP/port and
+      `core::device`'s service list. Manufacturer/model fields are
+      hardcoded constants — not configurable, nobody asked for that knob.
+      No `presentationURL` — no web UI to point at. XML-escapes
+      `friendly_name` (it's free-text from config) via `quick_xml::escape`.
+- [x] `core::http::scpd` (`src/core/http/scpd.rs` + `scpd/*.xml`): static
+      XML for `ContentDirectory` and `ConnectionManager`, `include_str!`'d.
+      **Correction from the plan as originally written**: declares only
+      the actions actually implemented (Browse/GetSearchCapabilities/
+      GetSortCapabilities/GetSystemUpdateID; GetProtocolInfo/
+      GetCurrentConnectionIDs/GetCurrentConnectionInfo), not the full
+      optional UPnP action set. Real minimal DLNA servers (MiniDLNA
+      included) do it this way — SCPD as an honest capability list, not a
+      spec checklist — so that's the precedent followed here instead of
+      the more "complete-looking" version originally planned.
+- [x] `core::http::router` (`src/core/http/router.rs`): `fn route(method,
+      path) -> Route` as a plain, synchronous, unit-tested match —
+      `Route::DeviceDescription`, `Route::Scpd(ServiceType)`,
+      `Route::NotFound`. The async handler (`HttpServer::handle`) is a
+      thin `match` on top of this pure decision.
+- [x] Wired into `main.rs`: `HttpServer::bind` on the resolved interface IP
+      (not `0.0.0.0`), spawned alongside the SSDP tasks, aborted on the
+      same shutdown path.
+- [x] `tests/integration.rs`: `reqwest` as a dev-dependency (zero features
+      — no TLS needed for plain HTTP, keeps it as light as reqwest gets),
+      binds the server on ephemeral `127.0.0.1:0`, `GET`s all three URLs,
+      asserts `200`/`404`, `Content-Type`, and well-formed XML.
 
 **Exit criterion:** `curl` against `/description.xml` and both SCPD URLs
 returns well-formed XML matching the UPnP device/service schema —
-confirmed both by the integration test and by hand against a running
-instance.
+confirmed both by the integration test and by hand (`curl`) against a real
+running instance reachable on the LAN.
 
 ---
 

@@ -52,7 +52,7 @@ project is trying to avoid.
 
 ## Current state
 
-Phases 1 and 2 are done. The binary parses CLI args, loads and validates
+Phases 1 through 3 are done. The binary parses CLI args, loads and validates
 `dlna-rs.toml` (full schema, `deny_unknown_fields` everywhere, fails loudly
 on a bad port/UUID/log-level/view name), and shuts down cleanly on
 SIGTERM/SIGINT. On top of that, it now answers SSDP discovery: it joins
@@ -70,6 +70,18 @@ sends an M-SEARCH and prints every response, `examples/ssdp_monitor.rs`
 passively watches all SSDP multicast traffic. Both are checked-in tools for
 repeatable manual verification, not one-off scripts — run them again
 whenever SSDP behavior needs a real-world sanity check.
+
+Phase 3 adds the other half of discoverability: a real HTTP server
+(`hyper` 1.x direct — a plain `TcpListener` accept loop, no framework)
+serving `/description.xml` and SCPD documents for both services. Two new
+core modules: `core::device` holds `ServiceType` and the URL scheme both
+SSDP and HTTP need to agree on (moved out of `core::ssdp::targets`, which
+had no business owning a concept it merely consumes), and `core::http`
+holds the router (`router.rs`, a pure synchronous `route()` match — same
+"decision separate from execution" shape as everything else so far),
+the device description builder (`description.rs`, pure like the SSDP
+message builders), and static SCPD content (`scpd.rs` + `scpd/*.xml`,
+`include_str!`'d — SCPD doesn't vary at runtime, so it isn't generated).
 
 None of the `ContentSource`/`ByteSource`/`MetadataProvider` traits exist
 yet — that starts in Phase 4.
@@ -89,6 +101,12 @@ way they are.
   crate table anticipated. Both are small, pure-Rust-facing wrappers; the
   unsafe FFI they do internally doesn't touch `forbid(unsafe_code)` in our
   own crates.
+- **SCPD declares only implemented actions, not the full UPnP-optional
+  set.** The Phase 3 plan originally called for spec-complete SCPD (every
+  action UPnP allows for `ContentDirectory`/`ConnectionManager`, whether or
+  not this server implements it). Real minimal servers don't do that —
+  MiniDLNA's own SCPD lists only what it actually supports. Followed that
+  precedent instead: SCPD as an honest capability list.
 
 ## Config
 
