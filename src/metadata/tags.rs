@@ -7,7 +7,7 @@
 //! touches only this file — see docs/DESIGN.md's encapsulation rule.
 
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use bytes::Bytes;
@@ -17,9 +17,32 @@ use lofty::tag::{Accessor, Tag};
 
 use crate::core::art_source::{Art, ArtSource};
 use crate::core::metadata_provider::{Metadata, MetadataProvider};
+use crate::metadata::cover_files::{find_cover_file, mime_for_cover_file};
 use crate::metadata::filename::FilenameMetadata;
 
-pub struct TagMetadata;
+pub struct TagMetadata {
+    media_roots: Vec<PathBuf>,
+}
+
+impl TagMetadata {
+    /// `media_roots` bounds the external-cover-file search: `find_cover_file`'s
+    /// "check the directory above, too" step (for a multi-disc album whose
+    /// art sits beside its disc subfolders) never returns a path outside
+    /// these directories - the same containment property `core::http`'s
+    /// `verify_within_roots` enforces for every file this server serves.
+    /// A root that can't be canonicalized (already invalid, or gone) is
+    /// dropped rather than failing construction - `HttpServer::bind`
+    /// independently canonicalizes the same list and fails startup loudly
+    /// if a configured directory is genuinely bad; this is only a
+    /// best-effort boundary for the lookup above, not that check.
+    pub fn new(media_roots: Vec<PathBuf>) -> Self {
+        let media_roots = media_roots
+            .into_iter()
+            .filter_map(|root| std::fs::canonicalize(&root).ok())
+            .collect();
+        TagMetadata { media_roots }
+    }
+}
 
 impl MetadataProvider for TagMetadata {
     fn metadata(&self, path: &Path) -> Metadata {
@@ -28,12 +51,15 @@ impl MetadataProvider for TagMetadata {
         // and that logic is already tested; this method only adds to
         // it, never replaces it.
         let filename = FilenameMetadata.metadata(path);
-        let Some(tag) = read_tag(path) else {
+        let tag = read_tag(path);
+        let has_embedded_art = tag.as_ref().is_some_and(|t| !t.pictures().is_empty());
+        let has_art = has_embedded_art || find_cover_file(path, &self.media_roots).is_some();
+        let Some(tag) = tag else {
             return Metadata {
                 artist: None,
                 album: None,
                 genre: None,
-                has_art: false,
+                has_art,
                 ..filename
             };
         };
@@ -41,7 +67,7 @@ impl MetadataProvider for TagMetadata {
             artist: tag.artist().map(|s| s.into_owned()),
             album: tag.album().map(|s| s.into_owned()),
             genre: tag.genre().map(|s| s.into_owned()),
-            has_art: !tag.pictures().is_empty(),
+            has_art,
             ..filename
         }
     }
@@ -50,18 +76,32 @@ impl MetadataProvider for TagMetadata {
 impl ArtSource for TagMetadata {
     fn art<'a>(&'a self, path: &'a Path) -> Pin<Box<dyn Future<Output = Option<Art>> + Send + 'a>> {
         Box::pin(async move {
-            let tag = read_tag(path)?;
-            let picture = tag
-                .get_picture_type(PictureType::CoverFront)
-                .or_else(|| tag.pictures().first())?
-                .clone();
-            let mime = mime_str(picture.mime_type());
+            if let Some(art) = embedded_picture(path) {
+                return Some(art);
+            }
+            let cover_path = find_cover_file(path, &self.media_roots)?;
+            let bytes = std::fs::read(&cover_path).ok()?;
             Some(Art {
-                bytes: Bytes::from(picture.into_data()),
-                mime,
+                bytes: Bytes::from(bytes),
+                mime: mime_for_cover_file(&cover_path),
             })
         })
     }
+}
+
+/// The embedded picture from `path`'s own tag, preferred over an
+/// external cover file when both exist - an embedded picture was
+/// deliberately attached to this exact track, so it wins.
+fn embedded_picture(path: &Path) -> Option<Art> {
+    let tag = read_tag(path)?;
+    let picture = tag
+        .get_picture_type(PictureType::CoverFront)
+        .or_else(|| tag.pictures().first())?
+        .clone();
+    Some(Art {
+        mime: mime_str(picture.mime_type()),
+        bytes: Bytes::from(picture.into_data()),
+    })
 }
 
 /// Reads `path`'s tag, or `None` if the file has no tag, isn't a format
@@ -141,15 +181,23 @@ mod tests {
         frame.repeat(30)
     }
 
+    /// A `TagMetadata` whose one configured root is `dir` - every test
+    /// below keeps its fixture file directly in `dir`, so this is enough
+    /// for the external-cover-file lookup to behave exactly as it would
+    /// against a real configured media directory.
+    fn tags_for(dir: &tempfile::TempDir) -> TagMetadata {
+        TagMetadata::new(vec![dir.path().to_path_buf()])
+    }
+
     #[test]
     fn reads_artist_album_genre_from_a_real_tag() {
-        let (_dir, path) = fixture_with(|tag| {
+        let (dir, path) = fixture_with(|tag| {
             tag.set_artist("Test Artist".to_string());
             tag.set_album("Test Album".to_string());
             tag.set_genre("Test Genre".to_string());
         });
 
-        let metadata = TagMetadata.metadata(&path);
+        let metadata = tags_for(&dir).metadata(&path);
         assert_eq!(metadata.artist.as_deref(), Some("Test Artist"));
         assert_eq!(metadata.album.as_deref(), Some("Test Album"));
         assert_eq!(metadata.genre.as_deref(), Some("Test Genre"));
@@ -162,7 +210,7 @@ mod tests {
         let path = dir.path().join("untagged.mp3");
         std::fs::write(&path, minimal_mp3()).unwrap();
 
-        let metadata = TagMetadata.metadata(&path);
+        let metadata = tags_for(&dir).metadata(&path);
         assert_eq!(metadata.artist, None);
         assert_eq!(metadata.album, None);
         assert_eq!(metadata.genre, None);
@@ -179,16 +227,16 @@ mod tests {
         let path = dir.path().join("track.wma");
         std::fs::write(&path, b"not a real wma file").unwrap();
 
-        let metadata = TagMetadata.metadata(&path);
+        let metadata = tags_for(&dir).metadata(&path);
         assert_eq!(metadata.artist, None);
         assert!(!metadata.has_art);
 
-        assert!(tokio_test_block_on(TagMetadata.art(&path)).is_none());
+        assert!(tokio_test_block_on(tags_for(&dir).art(&path)).is_none());
     }
 
     #[test]
     fn reads_back_an_embedded_picture() {
-        let (_dir, path) = fixture_with(|tag| {
+        let (dir, path) = fixture_with(|tag| {
             tag.push_picture(
                 lofty::picture::Picture::unchecked(tiny_png())
                     .pic_type(PictureType::CoverFront)
@@ -197,21 +245,53 @@ mod tests {
             );
         });
 
-        let metadata = TagMetadata.metadata(&path);
+        let metadata = tags_for(&dir).metadata(&path);
         assert!(metadata.has_art);
 
-        let art = tokio_test_block_on(TagMetadata.art(&path)).unwrap();
+        let art = tokio_test_block_on(tags_for(&dir).art(&path)).unwrap();
         assert_eq!(art.mime, "image/png");
         assert_eq!(&art.bytes[..], &tiny_png()[..]);
     }
 
     #[test]
     fn a_tag_with_no_picture_has_no_art() {
-        let (_dir, path) = fixture_with(|tag| {
+        let (dir, path) = fixture_with(|tag| {
             tag.set_artist("Artist Only".to_string());
         });
 
-        assert!(tokio_test_block_on(TagMetadata.art(&path)).is_none());
+        assert!(tokio_test_block_on(tags_for(&dir).art(&path)).is_none());
+    }
+
+    #[test]
+    fn falls_back_to_an_external_cover_file_when_the_tag_has_no_picture() {
+        let (dir, path) = fixture_with(|tag| {
+            tag.set_artist("Artist Only".to_string());
+        });
+        std::fs::write(dir.path().join("cover.jpg"), tiny_png()).unwrap();
+
+        let metadata = tags_for(&dir).metadata(&path);
+        assert!(metadata.has_art);
+
+        let art = tokio_test_block_on(tags_for(&dir).art(&path)).unwrap();
+        assert_eq!(art.mime, "image/jpeg");
+        assert_eq!(&art.bytes[..], &tiny_png()[..]);
+    }
+
+    #[test]
+    fn an_embedded_picture_wins_over_an_external_cover_file() {
+        let (dir, path) = fixture_with(|tag| {
+            tag.push_picture(
+                lofty::picture::Picture::unchecked(tiny_png())
+                    .pic_type(PictureType::CoverFront)
+                    .mime_type(MimeType::Png)
+                    .build(),
+            );
+        });
+        std::fs::write(dir.path().join("cover.jpg"), b"not the real cover").unwrap();
+
+        let art = tokio_test_block_on(tags_for(&dir).art(&path)).unwrap();
+        assert_eq!(art.mime, "image/png");
+        assert_eq!(&art.bytes[..], &tiny_png()[..]);
     }
 
     /// A 1x1 transparent PNG - the smallest real, valid PNG there is.

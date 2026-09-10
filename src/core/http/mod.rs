@@ -541,7 +541,7 @@ mod tests {
             Uuid::new_v4(),
             PanicsOnBoom,
             crate::transform::passthrough::PassthroughSource,
-            crate::metadata::tags::TagMetadata,
+            crate::metadata::tags::TagMetadata::new(Vec::new()),
             Vec::new(),
         )
         .await

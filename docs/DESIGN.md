@@ -41,10 +41,13 @@ in the abstract:
     album metadata is available. Two implementations ship: a cheap,
     filename-only one used on every Browse, and a `lofty`-backed one
     that reads real tags once per file, at scan time (Phase 12).
-  - `ArtSource` — given a resolved item path, returns its embedded cover
-    art, if it has any (Phase 12). Reads fresh from disk per request,
-    like `ByteSource`, so a large library's embedded art never sits in
-    memory.
+  - `ArtSource` — given a resolved item path, returns its cover art, if
+    it has any (Phase 12). The default checks an embedded picture
+    first, then falls back to a loose `cover.jpg`/`folder.png`-style
+    file or an `Artwork`-style subfolder beside the track (Phase 13,
+    added once real use showed most real albums use a loose file, not
+    an embedded picture). Reads fresh from disk per request, like
+    `ByteSource`, so a large library's cover art never sits in memory.
 
 It's one crate with modules that mirror this boundary
 (`core::{ssdp, http, didl, dispatch}`, `content::*`, `transform::*`,
@@ -291,6 +294,21 @@ runs once per file, at scan time, with its result cached on `index::Item`.
 scanner's call shape, or any consumer would need to change if that
 backend were ever swapped for something else.
 
+Phase 13 followed directly from real use: Phase 12's `ArtSource` only
+found a picture embedded in a track's own tag, and a real ~980-album
+library survey (`scripts/survey_cover_art.sh`) showed most albums don't
+have one — they use a loose `cover.jpg`/`folder.png`-style file or an
+`Artwork`-style subfolder instead. `metadata::cover_files` adds that
+lookup as a plain filesystem search, with no tag parsing and no
+dependency on `lofty`, and `TagMetadata` tries it only after an embedded
+picture comes up empty. `TagMetadata` also gained the configured media
+roots at construction, so the lookup's "check the directory above, too"
+step (needed for multi-disc albums whose art sits beside the disc
+subfolders, not inside them) can never step outside a configured
+directory — the same containment property `core::http`'s
+`resolve_within_roots` enforces for every file this server serves,
+applied here rather than assumed.
+
 See [`PLAN.md`](PLAN.md) for what's next and why the phases are ordered the
 way they are.
 
@@ -357,6 +375,12 @@ than its parent, and `main.rs` now genuinely needs to reach through it.
 reasoning as `core::byte_source`: `HttpServer::bind` takes `impl
 ArtSource + 'static`, so `main.rs` and `tests/integration.rs` only ever
 need to name the concrete `TagMetadata` type, never the trait itself.
+
+Phase 13 added `metadata::cover_files`, a plain (non-`pub(crate)`)
+module: nothing outside `metadata::tags` calls it, so it stays as
+private as Rust allows — the same grep check as everywhere else, just
+answering "not even `pub(crate)`" this time instead of one of the more
+open answers.
 
 ## Config
 

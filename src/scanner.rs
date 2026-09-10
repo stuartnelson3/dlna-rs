@@ -272,7 +272,8 @@ mod tests {
         let f = fixture(|root| write_tagged_mp3(&root.join("track.mp3")));
         let config = media_config(&f.root, &[]);
 
-        let index = scan(&config, &crate::metadata::tags::TagMetadata);
+        let tags = crate::metadata::tags::TagMetadata::new(vec![f.root.clone()]);
+        let index = scan(&config, &tags);
 
         let top = container_named(&index, &ObjectId::root(), &top_level_name(&f.root)).unwrap();
         let children = index.children(&top.id).unwrap();

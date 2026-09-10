@@ -160,6 +160,18 @@ grouping at all. The server's attacker-reachable parsing surface stays
 deliberately narrow: network input only, the three paths above. Tag
 reading doesn't widen it, since it never touches network input.
 
+Phase 13's external-cover-art-file lookup (`metadata::cover_files`)
+reads the same config-provenance category as tag reading: image files
+the operator already placed under a configured media directory, never
+network input. Its one filesystem-boundary property — checking a
+track's own directory, and for a multi-disc album the directory above
+it, without ever stepping outside a configured media directory — is
+verified directly, not just assumed: `TagMetadata` carries the same
+canonicalized media roots `core::http::HttpServer` does, and a unit
+test proves the lookup refuses a cover file sitting just outside a
+configured root even when a plain "check the parent directory" search
+would have found it.
+
 The Phase 7 rescan timer doesn't change this. It re-walks the *configured*
 media directories on a schedule — config-provenance paths the operator
 chose, not anything derived from network input — using the same scanner

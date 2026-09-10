@@ -156,12 +156,7 @@ async fn main() -> ExitCode {
     let shared_index = SharedIndex::new(IndexBuilder::new().build());
     let content_source = CompositeContentSource::from_config(&config.library, shared_index.clone());
 
-    let media_roots = config
-        .media
-        .directories
-        .iter()
-        .map(|dir| dir.path.clone())
-        .collect();
+    let media_roots: Vec<PathBuf> = config.media.roots();
 
     let http = match HttpServer::bind(
         interface_addr,
@@ -170,7 +165,7 @@ async fn main() -> ExitCode {
         uuid,
         content_source,
         PassthroughSource,
-        TagMetadata,
+        TagMetadata::new(media_roots.clone()),
         media_roots,
     )
     .await

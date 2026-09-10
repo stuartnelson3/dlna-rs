@@ -66,6 +66,16 @@ pub struct MediaConfig {
     pub exclude_patterns: Vec<String>,
 }
 
+impl MediaConfig {
+    /// The configured directories' paths on their own, for callers that
+    /// only need a containment boundary (`core::http`'s `verify_within_roots`,
+    /// `metadata::tags::TagMetadata`'s external-cover-file lookup) and not
+    /// the rest of `MediaDirectory`.
+    pub fn roots(&self) -> Vec<PathBuf> {
+        self.directories.iter().map(|d| d.path.clone()).collect()
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MediaDirectory {

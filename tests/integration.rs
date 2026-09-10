@@ -60,7 +60,7 @@ async fn start_server() -> (String, TempDir, tokio::task::JoinHandle<()>) {
         Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap(),
         content_source,
         PassthroughSource,
-        dlna_rs::metadata::tags::TagMetadata,
+        dlna_rs::metadata::tags::TagMetadata::new(vec![media_root.clone()]),
         vec![media_root],
     )
     .await
@@ -423,10 +423,8 @@ async fn start_server_with_rescan(
         follow_symlinks: false,
         exclude_patterns: vec![],
     };
-    let shared_index = SharedIndex::new(dlna_rs::scanner::scan(
-        &media,
-        &dlna_rs::metadata::tags::TagMetadata,
-    ));
+    let tags = dlna_rs::metadata::tags::TagMetadata::new(media.roots());
+    let shared_index = SharedIndex::new(dlna_rs::scanner::scan(&media, &tags));
     let content_source = FolderMirror::new(shared_index.clone());
 
     let server = HttpServer::bind(
@@ -436,7 +434,7 @@ async fn start_server_with_rescan(
         Uuid::parse_str("22222222-3333-4444-5555-666666666666").unwrap(),
         content_source,
         PassthroughSource,
-        dlna_rs::metadata::tags::TagMetadata,
+        tags,
         vec![dir.path().to_path_buf()],
     )
     .await
@@ -484,10 +482,8 @@ async fn start_server_with_library(
         follow_symlinks: false,
         exclude_patterns: vec![],
     };
-    let shared_index = SharedIndex::new(dlna_rs::scanner::scan(
-        &media,
-        &dlna_rs::metadata::tags::TagMetadata,
-    ));
+    let tags = dlna_rs::metadata::tags::TagMetadata::new(media.roots());
+    let shared_index = SharedIndex::new(dlna_rs::scanner::scan(&media, &tags));
     let content_source = CompositeContentSource::from_config(&library, shared_index);
 
     let server = HttpServer::bind(
@@ -497,7 +493,7 @@ async fn start_server_with_library(
         Uuid::parse_str("33333333-4444-5555-6666-777777777777").unwrap(),
         content_source,
         PassthroughSource,
-        dlna_rs::metadata::tags::TagMetadata,
+        tags,
         vec![dir.path().to_path_buf()],
     )
     .await
@@ -659,6 +655,38 @@ async fn real_tags_and_cover_art_are_served_over_real_http() {
         .unwrap();
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers().get("content-type").unwrap(), "image/png");
+    let body = response.bytes().await.unwrap();
+    assert_eq!(&body[..], &tiny_png()[..]);
+}
+
+#[tokio::test]
+async fn an_external_cover_file_is_served_over_real_http_with_no_embedded_picture() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut frame = vec![0xFFu8, 0xFB, 0x90, 0x00];
+    frame.resize(417, 0);
+    std::fs::write(dir.path().join("track.mp3"), frame.repeat(30)).unwrap();
+    std::fs::write(dir.path().join("cover.jpg"), tiny_png()).unwrap();
+
+    let library = LibraryConfig {
+        views: vec![View::Folders],
+        recently_added: RecentlyAddedConfig::default(),
+    };
+    let (base, _handle) = start_server_with_library(&dir, library).await;
+
+    let root_didl = browse_didl(&base, "0").await;
+    let folders_mount_id = extract_attr(&root_didl, "container", "id");
+    let mount_didl = browse_didl(&base, &folders_mount_id).await;
+    let folder_id = extract_attr(&mount_didl, "container", "id");
+    let track_didl = browse_didl(&base, &folder_id).await;
+    assert!(track_didl.contains("<upnp:albumArtURI>"));
+
+    let item_id = extract_attr(&track_didl, "item", "id");
+    let response = reqwest::get(format!("{base}/art/{item_id}")).await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        "image/jpeg"
+    );
     let body = response.bytes().await.unwrap();
     assert_eq!(&body[..], &tiny_png()[..]);
 }

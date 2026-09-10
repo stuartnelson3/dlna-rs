@@ -32,7 +32,8 @@ pub async fn run(media: MediaConfig, index: SharedIndex, interval: Duration, on_
 
 async fn rescan_once(media: &MediaConfig, index: &SharedIndex) {
     let media = media.clone();
-    match tokio::task::spawn_blocking(move || scanner::scan(&media, &TagMetadata)).await {
+    let tags = TagMetadata::new(media.roots());
+    match tokio::task::spawn_blocking(move || scanner::scan(&media, &tags)).await {
         Ok(new_index) => {
             log::info!("rescan complete: {} entries indexed", new_index.len());
             index.replace(new_index);

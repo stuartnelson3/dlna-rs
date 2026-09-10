@@ -846,6 +846,72 @@ verified above.
 
 ---
 
+## Phase 13 — External cover-art files
+
+**Goal:** find an album's cover art the way most real collections
+actually store it — a loose image file beside the tracks — not only an
+embedded picture inside one file's own tag.
+
+Real-world use turned up two problems with Phase 12's cover art: it only
+read a picture embedded in a track's own tag, and most real albums don't
+embed one. A survey script run against a real ~980-album library (see
+`scripts/survey_cover_art.sh`) confirmed this directly: about half the
+library used a loose `cover.jpg`/`folder.png`-style file or an
+`Artwork`/`Scans`-style subfolder, plus a further chunk explained by
+multi-disc albums (`Album/CD1/track.flac`) that keep their art one
+level up, beside the disc subfolders rather than inside them. The first
+version of the survey script under-counted this badly at first — it
+checked cover-file names case-sensitively while checking audio
+extensions case-insensitively, and it never looked one directory up at
+all — corrected once real output looked suspiciously high on "none".
+
+- [x] New `metadata::cover_files` module: a pure filesystem lookup, no
+      tag parsing, no dependency on `lofty`. `find_cover_file` checks a
+      named file (`cover`/`folder`/`front`/`albumart`/`album`/`art`/
+      `thumb`, any of `.jpg`/`.jpeg`/`.png`, case-insensitive), then any
+      other image file present (sorted, for a deterministic pick — real
+      collections often use an arbitrary name like
+      `AlbumArt_Large.jpg`), then an `Artwork`/`Scans`-style subfolder
+      (matched by substring, since real folder names vary too much to
+      enumerate). Both the track's own directory and the directory
+      above it get the same three checks, in that order, since the
+      track's own directory always wins when it has an answer.
+- [x] `metadata::tags::TagMetadata` tries an embedded picture first (an
+      embedded picture was deliberately attached to that exact track,
+      so it takes priority), then falls back to `find_cover_file` for
+      both `has_art` and `ArtSource::art`. `lofty` still never leaves
+      `tags.rs`; the new module knows nothing about tags or `lofty` at
+      all — a genuinely separate concern composed at one call site, not
+      merged into it.
+- [x] Root containment: checking the directory *above* the track's own
+      could otherwise step outside a configured media directory — the
+      one layout where that happens is a track sitting directly in the
+      configured root, with no album folder wrapping it, so the
+      directory above it is the root's own parent. `TagMetadata` now
+      carries the configured media roots (mirroring
+      `core::http::HttpServer`'s own `media_roots`, canonicalized in
+      `TagMetadata::new` the same way) and refuses to climb into a
+      directory outside them — the same containment property
+      `core::http::resolve_within_roots` enforces for every file this
+      server serves, applied here too rather than assumed.
+
+**Verified:** `cargo build`/`test`/`fmt --check`/`clippy -D warnings`
+all clean (200 lib + integration tests). New unit tests in
+`metadata::cover_files` cover every lookup rule, including a folder
+whose own name happens to contain an art-hint substring (`Bartok`
+contains "art") not matching itself, and a regression test proving the
+lookup refuses to return a path outside the configured root even when a
+plain "check the parent directory" search would have found one. A new
+integration test serves a real cover file over `GET /art/{id}` for a
+track with no embedded picture, end to end.
+
+**Exit criterion:** a track with no embedded picture, sitting beside a
+`cover.jpg`, `folder.png`, or `Artwork/` subfolder, shows
+`<upnp:albumArtURI>` in Browse output and serves the real image bytes
+over `GET /art/{id}`. Met, verified above.
+
+---
+
 ## After MVP
 
 Not phased yet — pick these up only as real need shows up, per the
