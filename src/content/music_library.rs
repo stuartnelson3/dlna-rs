@@ -3,13 +3,26 @@
 //! items into a different tree shape. No separate data store, so a
 //! rescan updates every view at once, with nothing to invalidate by hand.
 //!
-//! Albums and Artists group by real folder structure, not by a parsed
-//! tag: an album is the folder that directly holds a track, and an
-//! artist is that folder's parent. This is the heuristic the spec's
-//! §5.1 describes for MVP, before any tag reading exists. A track with
-//! no real artist folder above it (for example, one placed directly in a
-//! configured media directory) is left out of the Artists view — it is
-//! still visible under Folders, so nothing is hidden, only ungrouped.
+//! An album is still always the folder that directly holds a track —
+//! the spec's §5.1 heuristic for MVP, from before any tag reading
+//! existed. But its *displayed title*, and which artist it groups
+//! under, now prefer a real tag over the folder when one is trustworthy:
+//! specifically, when every track directly in that folder that carries
+//! the tag agrees on the same value (see `consistent_tag_value`). A real
+//! compilation, where tracks in one folder disagree on artist, falls
+//! back to the plain folder heuristic rather than guessing — building a
+//! genuine "Various Artists" grouping is a separate, deferred feature
+//! (`docs/PLAN.md`'s After MVP list), not this one.
+//!
+//! This is also how the same real artist gets grouped into one Artists
+//! entry even when their albums are scattered across different real
+//! folder shapes — a proper `Artist/Album` tree plus several flat
+//! `Artist - Album (Year)` folders directly under the media root, say —
+//! since a consistent artist tag is used as the grouping key regardless
+//! of where its album folder physically sits. A folder with no
+//! consistent artist tag, or no artist folder above it at all, is left
+//! out of the Artists view exactly as before — still visible under
+//! Folders and Albums, so nothing is hidden, only ungrouped.
 
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime};
@@ -64,29 +77,158 @@ impl MusicLibraryView {
     }
 
     /// Walks every container from the root down once, and derives every
-    /// grouping this view needs from that single pass: every item, which
-    /// containers are albums (they hold a track directly), and which are
-    /// artists (they hold an album directly). Everything else in this
-    /// type takes a `&Snapshot` instead of re-deriving these - a real
-    /// library can hold many thousands of tracks, and re-walking the
-    /// whole tree once per album or per artist turns one Browse call
-    /// into a browse-call-shaped denial of service against itself.
+    /// grouping this view needs from that single pass: every item, every
+    /// album's resolved display title and artist, and every artist (real
+    /// folder or tag-derived) with its own resolved list of albums.
+    /// Everything else in this type takes a `&Snapshot` instead of
+    /// re-deriving these - a real library can hold many thousands of
+    /// tracks, and re-walking the whole tree once per album or per
+    /// artist turns one Browse call into a browse-call-shaped denial of
+    /// service against itself.
     fn snapshot(&self) -> Snapshot {
         let items = self.all_items();
         let album_ids: HashSet<ObjectId> =
             items.iter().map(|item| item.parent_id.clone()).collect();
-        let artist_ids: HashSet<ObjectId> = album_ids
+        let by_album = Self::group_items_by_parent(&items);
+
+        // Per album: its real container, its tag-preferred display
+        // title, and which artist it resolves under. `artist_key` is
+        // `None` for a true orphan (no consistent artist tag, and no
+        // real artist folder above it) - excluded from Artists, same as
+        // always. `artist_raw_name` keeps the tag's original casing,
+        // only for the `Tag` case, for picking a deterministic display
+        // title once albums are grouped by artist below.
+        struct Resolved {
+            display_title: String,
+            artist_key: Option<ArtistKey>,
+            artist_raw_name: Option<String>,
+        }
+
+        let mut resolved: HashMap<ObjectId, Resolved> = HashMap::new();
+        for (album_id, tracks) in &by_album {
+            let Some(Entry::Container(real_container)) = self.index.entry(album_id) else {
+                continue;
+            };
+            let display_title = consistent_tag_value(tracks, |i| i.album.as_deref())
+                .unwrap_or_else(|| real_container.title.clone());
+            let (artist_key, artist_raw_name) =
+                match consistent_tag_value(tracks, |i| i.artist.as_deref()) {
+                    Some(name) => (
+                        Some(ArtistKey::Tag(normalize_artist_key(&name))),
+                        Some(name),
+                    ),
+                    None => {
+                        let folder_key = real_container
+                            .parent_id
+                            .clone()
+                            .filter(|parent| *parent != ObjectId::root())
+                            .map(ArtistKey::Folder);
+                        (folder_key, None)
+                    }
+                };
+            resolved.insert(
+                album_id.clone(),
+                Resolved {
+                    display_title,
+                    artist_key,
+                    artist_raw_name,
+                },
+            );
+        }
+
+        let mut by_artist_key: HashMap<ArtistKey, Vec<ObjectId>> = HashMap::new();
+        for (album_id, r) in &resolved {
+            if let Some(key) = &r.artist_key {
+                by_artist_key
+                    .entry(key.clone())
+                    .or_default()
+                    .push(album_id.clone());
+            }
+        }
+
+        let mut artists: HashMap<ObjectId, ArtistEntry> = HashMap::new();
+        for (key, album_ids_for_artist) in by_artist_key {
+            let container = match &key {
+                // A real folder-artist: re-fetch it fresh, since its own
+                // real title/parent are unaffected by this feature.
+                ArtistKey::Folder(id) => match self.index.entry(id) {
+                    Some(Entry::Container(mut c)) => {
+                        c.child_count = album_ids_for_artist.len();
+                        c
+                    }
+                    _ => continue,
+                },
+                // A tag-derived artist has no backing real container -
+                // it may span several real folders, or none
+                // consistently - so it's hand-built. Its display title
+                // is the lexicographically smallest raw variant across
+                // every album that resolved to it: deterministic, not
+                // dependent on `HashMap` iteration order.
+                ArtistKey::Tag(normalized) => {
+                    let display_title = album_ids_for_artist
+                        .iter()
+                        .filter_map(|id| resolved.get(id).and_then(|r| r.artist_raw_name.clone()))
+                        .min()
+                        .unwrap_or_else(|| normalized.clone());
+                    Container {
+                        id: synthetic_artist_id(normalized),
+                        parent_id: None,
+                        title: display_title,
+                        child_count: album_ids_for_artist.len(),
+                    }
+                }
+            };
+            artists.insert(
+                container.id.clone(),
+                ArtistEntry {
+                    container,
+                    album_ids: album_ids_for_artist,
+                },
+            );
+        }
+
+        // A folder can, in principle, both hold a track directly (an
+        // album) and be some other album's resolved artist (real folder
+        // or - now - a tag match). Such a folder gets its own top-level
+        // artist entry, so its album role is dropped wherever it would
+        // otherwise be listed under one - listing it twice, in two
+        // different roles, is a contradiction `entry()` can't answer for
+        // both at once. Same trade-off as the orphan-track exclusion
+        // this module's doc comment describes. This has to run globally,
+        // after every artist's albums are known, since a tag can now
+        // pull an album out from under its real folder-parent's own
+        // artist bucket into an unrelated tag-derived one.
+        let artist_id_set: HashSet<ObjectId> = artists.keys().cloned().collect();
+        for entry in artists.values_mut() {
+            entry
+                .album_ids
+                .retain(|album_id| !artist_id_set.contains(album_id));
+            entry.container.child_count = entry.album_ids.len();
+        }
+
+        let album_facts: HashMap<ObjectId, AlbumFacts> = resolved
             .iter()
-            .filter_map(|album_id| match self.index.entry(album_id) {
-                Some(Entry::Container(album)) => album.parent_id,
-                _ => None,
+            .map(|(album_id, r)| {
+                let artist_id = match &r.artist_key {
+                    Some(ArtistKey::Folder(id)) => id.clone(),
+                    Some(ArtistKey::Tag(normalized)) => synthetic_artist_id(normalized),
+                    None => ObjectId::root(),
+                };
+                (
+                    album_id.clone(),
+                    AlbumFacts {
+                        display_title: r.display_title.clone(),
+                        artist_id,
+                    },
+                )
             })
-            .filter(|id| *id != ObjectId::root())
             .collect();
+
         Snapshot {
             items,
             album_ids,
-            artist_ids,
+            album_facts,
+            artists,
         }
     }
 
@@ -110,11 +252,11 @@ impl MusicLibraryView {
         items
     }
 
-    /// Groups the snapshot's items by their containing folder - the real
-    /// `parent_id` each item already carries in the index.
-    fn group_by_album(snapshot: &Snapshot) -> HashMap<ObjectId, Vec<Item>> {
+    /// Groups items by their containing folder - the real `parent_id`
+    /// each item already carries in the index.
+    fn group_items_by_parent(items: &[Item]) -> HashMap<ObjectId, Vec<Item>> {
         let mut groups: HashMap<ObjectId, Vec<Item>> = HashMap::new();
-        for item in &snapshot.items {
+        for item in items {
             groups
                 .entry(item.parent_id.clone())
                 .or_default()
@@ -123,47 +265,56 @@ impl MusicLibraryView {
         groups
     }
 
+    fn group_by_album(snapshot: &Snapshot) -> HashMap<ObjectId, Vec<Item>> {
+        Self::group_items_by_parent(&snapshot.items)
+    }
+
     fn all_songs(snapshot: &Snapshot) -> Vec<Entry> {
         let mut items = snapshot.items.clone();
         items.sort_by(|a, b| a.title.cmp(&b.title));
         items.into_iter().map(Entry::Item).collect()
     }
 
-    /// An album's displayed `childCount` must match what browsing into it
-    /// actually returns: its track count, not the real folder's full
-    /// child count (which can also include sub-folders — separate
-    /// albums, not this one's content; see `tracks_of_album`).
     fn albums(&self, snapshot: &Snapshot) -> Vec<Entry> {
-        containers_for(&self.index, snapshot.album_ids.clone())
-            .into_iter()
-            .map(|entry| self.with_real_child_count(entry, snapshot, Self::tracks_of_album))
-            .collect()
+        let mut containers: Vec<Container> = snapshot
+            .album_ids
+            .iter()
+            .filter_map(|id| self.album_container(snapshot, id))
+            .collect();
+        containers.sort_by(|a, b| a.title.cmp(&b.title));
+        containers.into_iter().map(Entry::Container).collect()
     }
 
-    /// Same correction as `albums`, but counting an artist's albums
-    /// instead of an album's tracks.
     fn artists(&self, snapshot: &Snapshot) -> Vec<Entry> {
-        containers_for(&self.index, snapshot.artist_ids.clone())
-            .into_iter()
-            .map(|entry| self.with_real_child_count(entry, snapshot, Self::albums_under_artist))
-            .collect()
+        let mut containers: Vec<Container> = snapshot
+            .artists
+            .values()
+            .map(|entry| entry.container.clone())
+            .collect();
+        containers.sort_by(|a, b| a.title.cmp(&b.title));
+        containers.into_iter().map(Entry::Container).collect()
     }
 
-    fn with_real_child_count(
-        &self,
-        entry: Entry,
-        snapshot: &Snapshot,
-        count_children: impl Fn(&Self, &Snapshot, &ObjectId) -> Option<Vec<Entry>>,
-    ) -> Entry {
-        match entry {
-            Entry::Container(mut container) => {
-                container.child_count = count_children(self, snapshot, &container.id)
-                    .map(|children| children.len())
-                    .unwrap_or(0);
-                Entry::Container(container)
-            }
-            other => other,
+    /// The one place every album `Container` gets built: fetches the
+    /// real container, overwrites its title with the tag-preferred
+    /// display title from `album_facts` (falling back to the real
+    /// folder name when no tag applies - `album_facts` only has an
+    /// entry once `snapshot()` successfully resolved that album), and
+    /// sets `child_count` to this album's actual track count. Used by
+    /// every call site that lists an album, so none of them can ever
+    /// disagree about its title.
+    fn album_container(&self, snapshot: &Snapshot, id: &ObjectId) -> Option<Container> {
+        let Entry::Container(mut container) = self.index.entry(id)? else {
+            return None;
+        };
+        if let Some(facts) = snapshot.album_facts.get(id) {
+            container.title = facts.display_title.clone();
         }
+        container.child_count = self
+            .tracks_of_album(snapshot, id)
+            .map(|tracks| tracks.len())
+            .unwrap_or(0);
+        Some(container)
     }
 
     /// The tracks directly inside album `id` — real children of `id`,
@@ -184,41 +335,25 @@ impl MusicLibraryView {
         Some(tracks)
     }
 
-    /// The albums directly under artist `id` — real children of `id`
-    /// that are themselves albums. `None` if `id` isn't a real artist.
-    ///
-    /// A folder can, in principle, qualify as both an album (it holds a
-    /// track directly) and an artist (one of its own sub-folders holds
-    /// a track too). Such a folder gets its own top-level artist entry,
-    /// so it's excluded here — listing it twice, in two different
-    /// roles, is the kind of contradiction `entry()` can't answer for
-    /// both roles at once. Its own directly-held track is the cost: it
-    /// won't appear in this view. Same kind of trade-off as the
-    /// orphan-track exclusion this module's doc comment describes.
+    /// The albums grouped under artist `id` - either a real folder
+    /// artist's resolved albums, or every album that shares one
+    /// consistent tag artist name, wherever it physically sits in the
+    /// tree. `None` if `id` isn't a real artist (real or tag-derived).
+    /// Each returned album's `parent_id` is set to `id`, overwriting
+    /// whatever real parent the index recorded - necessary the moment an
+    /// album's tag redirects it to an artist other than its real
+    /// folder-parent.
     fn albums_under_artist(&self, snapshot: &Snapshot, id: &ObjectId) -> Option<Vec<Entry>> {
-        if !snapshot.artist_ids.contains(id) {
-            return None;
-        }
-        let mut albums: Vec<Container> = self
-            .index
-            .children(id)?
-            .into_iter()
-            .filter_map(|entry| match entry {
-                Entry::Container(c)
-                    if snapshot.album_ids.contains(&c.id)
-                        && !snapshot.artist_ids.contains(&c.id) =>
-                {
-                    Some(c)
-                }
-                _ => None,
+        let artist = snapshot.artists.get(id)?;
+        let mut albums: Vec<Container> = artist
+            .album_ids
+            .iter()
+            .filter_map(|album_id| self.album_container(snapshot, album_id))
+            .map(|mut container| {
+                container.parent_id = Some(id.clone());
+                container
             })
             .collect();
-        for album in &mut albums {
-            album.child_count = self
-                .tracks_of_album(snapshot, &album.id)
-                .map(|tracks| tracks.len())
-                .unwrap_or(0);
-        }
         albums.sort_by(|a, b| a.title.cmp(&b.title));
         Some(albums.into_iter().map(Entry::Container).collect())
     }
@@ -249,13 +384,7 @@ impl MusicLibraryView {
         let mut dated: Vec<(Container, SystemTime)> = Self::group_by_album(snapshot)
             .into_iter()
             .filter_map(|(album_id, items)| {
-                let Entry::Container(mut container) = self.index.entry(&album_id)? else {
-                    return None;
-                };
-                container.child_count = self
-                    .tracks_of_album(snapshot, &album_id)
-                    .map(|tracks| tracks.len())
-                    .unwrap_or(0);
+                let container = self.album_container(snapshot, &album_id)?;
                 let newest = items.iter().map(|item| item.modified).max()?;
                 Some((container, newest))
             })
@@ -270,13 +399,39 @@ impl MusicLibraryView {
     }
 }
 
+/// One album's tag-resolved facts: its display title (tag-preferred,
+/// falling back to its real folder name) and which artist it groups
+/// under (a real folder-artist id, a synthetic tag-artist id, or root
+/// for a true orphan - see `snapshot()`).
+struct AlbumFacts {
+    display_title: String,
+    artist_id: ObjectId,
+}
+
+/// One resolved artist, real or tag-derived, with the final (dual-role
+/// exclusion already applied) list of albums under it.
+struct ArtistEntry {
+    container: Container,
+    album_ids: Vec<ObjectId>,
+}
+
+/// The key `snapshot()` groups albums by to find their artist: either a
+/// consistent tag artist name (normalized for comparison), or today's
+/// exact folder-parent heuristic.
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum ArtistKey {
+    Tag(String),
+    Folder(ObjectId),
+}
+
 /// Everything derived from one walk of the whole tree - computed once per
 /// Browse call by `snapshot()`, then shared. See that method's doc
 /// comment for why this exists.
 struct Snapshot {
     items: Vec<Item>,
     album_ids: HashSet<ObjectId>,
-    artist_ids: HashSet<ObjectId>,
+    album_facts: HashMap<ObjectId, AlbumFacts>,
+    artists: HashMap<ObjectId, ArtistEntry>,
 }
 
 impl ContentSource for MusicLibraryView {
@@ -318,24 +473,25 @@ impl ContentSource for MusicLibraryView {
             return Some(entry);
         }
         // A second-level album (one browsed into by way of an artist,
-        // in Artists mode) needs the same `child_count` correction
-        // `albums`/`albums_under_artist` already apply, for the same
-        // reason: the real folder's full child count can include a
-        // sub-folder that isn't this album's own track.
+        // in Artists mode) needs the same title/child-count resolution
+        // `albums`/`albums_under_artist` already apply, via the same
+        // `album_container` helper - so all three can never disagree.
+        // In Artists mode specifically, its `parent_id` must also match
+        // whatever artist it's actually grouped under, which can differ
+        // from its real folder-parent once a tag redirects it.
         if matches!(
             self.mode,
             Mode::Albums | Mode::Artists | Mode::RecentlyAddedAlbums { .. }
         ) {
             let snapshot = self.snapshot();
             if snapshot.album_ids.contains(id) {
-                let mut entry = self.index.entry(id)?;
-                if let Entry::Container(container) = &mut entry {
-                    container.child_count = self
-                        .tracks_of_album(&snapshot, id)
-                        .map(|tracks| tracks.len())
-                        .unwrap_or(0);
+                let mut container = self.album_container(&snapshot, id)?;
+                if matches!(self.mode, Mode::Artists) {
+                    if let Some(facts) = snapshot.album_facts.get(id) {
+                        container.parent_id = Some(facts.artist_id.clone());
+                    }
                 }
-                return Some(entry);
+                return Some(Entry::Container(container));
             }
         }
         self.index.entry(id)
@@ -357,21 +513,48 @@ fn reparent_to_root(entry: Entry) -> Entry {
     }
 }
 
-/// Resolves a set of container IDs to their real `Container` entries,
-/// dropping any ID that no longer resolves (the index changed under us —
-/// a rescan can replace it mid-walk) rather than failing the whole list.
-/// Sorted by title, since a `HashSet`'s own order is not stable across
-/// runs.
-fn containers_for(index: &SharedIndex, ids: HashSet<ObjectId>) -> Vec<Entry> {
-    let mut containers: Vec<Container> = ids
-        .into_iter()
-        .filter_map(|id| match index.entry(&id) {
-            Some(Entry::Container(container)) => Some(container),
-            _ => None,
-        })
-        .collect();
-    containers.sort_by(|a, b| a.title.cmp(&b.title));
-    containers.into_iter().map(Entry::Container).collect()
+/// `None` if no track has a non-empty value for `field`, or if two
+/// tracks disagree (case/whitespace-folded). A missing tag is a
+/// non-vote, not a disagreement - deliberately conservative: a real
+/// compilation folder (inconsistent artist tags) falls back to
+/// folder-based grouping rather than guessing. See this module's doc
+/// comment.
+fn consistent_tag_value<'a>(
+    tracks: &'a [Item],
+    field: impl Fn(&'a Item) -> Option<&'a str>,
+) -> Option<String> {
+    let mut chosen: Option<&str> = None;
+    let mut normalized_key: Option<String> = None;
+    for item in tracks {
+        let Some(raw) = field(item).map(str::trim).filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        let key = raw.to_lowercase();
+        match &normalized_key {
+            None => {
+                normalized_key = Some(key);
+                chosen = Some(raw);
+            }
+            Some(k) if *k == key => {}
+            Some(_) => return None,
+        }
+    }
+    chosen.map(str::to_string)
+}
+
+/// The comparison/dedup key for a tag artist name - trimmed and
+/// lower-cased, so "AC/DC" and " ac/dc " group as the same artist. The
+/// *display* title never goes through this; see `snapshot()`.
+fn normalize_artist_key(raw: &str) -> String {
+    raw.trim().to_lowercase()
+}
+
+/// A tag-derived artist has no backing real `Index` container, so it
+/// needs its own id - a plain non-numeric string, which can never
+/// collide with a real `Index`-allocated id (always a plain integer
+/// string; see `IndexBuilder`'s `next_id`, `src/index.rs`).
+fn synthetic_artist_id(normalized_key: &str) -> ObjectId {
+    ObjectId::new(format!("tag-artist:{normalized_key}"))
 }
 
 /// Sorts a container's children for display: tracks by parsed track
@@ -426,7 +609,7 @@ fn is_recent_enough(modified: SystemTime, cutoff: Option<SystemTime>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::index::IndexBuilder;
+    use crate::index::{IndexBuilder, TrackTags};
     use std::path::PathBuf;
 
     /// Builds a small tree:
@@ -514,6 +697,243 @@ mod tests {
 
         let albums = view.children(&artist_id).unwrap();
         assert_eq!(titles(&albums), vec!["Album"]);
+    }
+
+    fn tagged_item(
+        builder: &mut IndexBuilder,
+        parent: &ObjectId,
+        title: &str,
+        path: &str,
+        artist: Option<&str>,
+        album: Option<&str>,
+    ) {
+        builder.add_item_with_tags(
+            parent,
+            title.to_string(),
+            PathBuf::from(path),
+            1,
+            SystemTime::UNIX_EPOCH,
+            TrackTags {
+                artist: artist.map(str::to_string),
+                album: album.map(str::to_string),
+                genre: None,
+                has_art: false,
+            },
+        );
+    }
+
+    #[test]
+    fn tag_artist_unifies_a_nested_folder_album_and_a_flat_top_level_album() {
+        // The real-world case this feature exists for: the same artist
+        // split across a proper nested tree and a flat top-level album
+        // folder, unified by a consistent artist tag rather than folder
+        // shape.
+        let mut builder = IndexBuilder::new();
+        let ac_dc = builder.add_container(&ObjectId::root(), "AC_DC".to_string());
+        let tnt = builder.add_container(&ac_dc, "TNT".to_string());
+        tagged_item(
+            &mut builder,
+            &tnt,
+            "01 - Track.mp3",
+            "/m/AC_DC/TNT/01.mp3",
+            Some("AC/DC"),
+            None,
+        );
+        let back_in_black =
+            builder.add_container(&ObjectId::root(), "AC-DC - Back in Black".to_string());
+        tagged_item(
+            &mut builder,
+            &back_in_black,
+            "01 - Track.mp3",
+            "/m/AC-DC - Back in Black/01.mp3",
+            Some("AC/DC"),
+            None,
+        );
+
+        let view = MusicLibraryView::new(SharedIndex::new(builder.build()), Mode::Artists);
+        let artists = view.children(&ObjectId::root()).unwrap();
+        assert_eq!(titles(&artists), vec!["AC/DC"]);
+        let Entry::Container(artist) = &artists[0] else {
+            panic!("expected a container");
+        };
+        assert_eq!(artist.child_count, 2);
+
+        let albums = view.children(&artist.id).unwrap();
+        let mut album_titles = titles(&albums);
+        album_titles.sort_unstable();
+        assert_eq!(album_titles, vec!["AC-DC - Back in Black", "TNT"]);
+    }
+
+    #[test]
+    fn artist_tags_differing_only_in_case_or_whitespace_are_the_same_artist() {
+        let mut builder = IndexBuilder::new();
+        let album_a = builder.add_container(&ObjectId::root(), "Album A".to_string());
+        tagged_item(
+            &mut builder,
+            &album_a,
+            "track.mp3",
+            "/m/a/track.mp3",
+            Some("AC/DC"),
+            None,
+        );
+        let album_b = builder.add_container(&ObjectId::root(), "Album B".to_string());
+        tagged_item(
+            &mut builder,
+            &album_b,
+            "track.mp3",
+            "/m/b/track.mp3",
+            Some(" ac/dc "),
+            None,
+        );
+
+        let view = MusicLibraryView::new(SharedIndex::new(builder.build()), Mode::Artists);
+        let artists = view.children(&ObjectId::root()).unwrap();
+        assert_eq!(
+            artists.len(),
+            1,
+            "differently-cased/spaced tags must merge into one artist"
+        );
+        let Entry::Container(artist) = &artists[0] else {
+            panic!("expected a container");
+        };
+        assert_eq!(artist.child_count, 2);
+        // Deterministic tie-break: the lexicographically smallest raw
+        // variant wins, not whichever the HashMap happens to iterate
+        // first. Uppercase sorts before lowercase in ASCII, so "AC/DC"
+        // wins over the trimmed "ac/dc".
+        assert_eq!(artist.title, "AC/DC");
+    }
+
+    #[test]
+    fn inconsistent_artist_tags_fall_back_to_folder_grouping_not_a_crash() {
+        let mut builder = IndexBuilder::new();
+        let compilation = builder.add_container(&ObjectId::root(), "Compilation".to_string());
+        tagged_item(
+            &mut builder,
+            &compilation,
+            "01.mp3",
+            "/m/c/01.mp3",
+            Some("Alice"),
+            None,
+        );
+        tagged_item(
+            &mut builder,
+            &compilation,
+            "02.mp3",
+            "/m/c/02.mp3",
+            Some("Bob"),
+            None,
+        );
+        let index = SharedIndex::new(builder.build());
+
+        let albums_view = MusicLibraryView::new(index.clone(), Mode::Albums);
+        assert_eq!(
+            titles(&albums_view.children(&ObjectId::root()).unwrap()),
+            vec!["Compilation"]
+        );
+
+        let artists_view = MusicLibraryView::new(index, Mode::Artists);
+        // The compilation's own folder-parent is root - a true orphan
+        // under the folder heuristic - and disagreeing artist tags must
+        // not invent a fabricated single-artist bucket either. Real
+        // "Various Artists" handling is a separate, deferred feature.
+        assert_eq!(
+            artists_view.children(&ObjectId::root()).unwrap(),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn consistent_album_tag_overrides_the_raw_folder_name_for_display() {
+        let mut builder = IndexBuilder::new();
+        let folder = builder.add_container(&ObjectId::root(), "raw-folder-name".to_string());
+        tagged_item(
+            &mut builder,
+            &folder,
+            "01.mp3",
+            "/m/f/01.mp3",
+            None,
+            Some("Real Album Title"),
+        );
+        tagged_item(
+            &mut builder,
+            &folder,
+            "02.mp3",
+            "/m/f/02.mp3",
+            None,
+            Some("Real Album Title"),
+        );
+
+        let view = MusicLibraryView::new(SharedIndex::new(builder.build()), Mode::Albums);
+        let albums = view.children(&ObjectId::root()).unwrap();
+        assert_eq!(titles(&albums), vec!["Real Album Title"]);
+        let album_id = albums[0].id().clone();
+
+        // Mode::Albums's listing and entry()'s direct by-id lookup must
+        // agree - the whole reason album_container() is the single
+        // place every album Container gets built.
+        let Some(Entry::Container(direct)) = view.entry(&album_id) else {
+            panic!("expected a container");
+        };
+        assert_eq!(direct.title, "Real Album Title");
+    }
+
+    #[test]
+    fn inconsistent_album_tag_falls_back_to_the_folder_name() {
+        let mut builder = IndexBuilder::new();
+        let folder = builder.add_container(&ObjectId::root(), "raw-folder-name".to_string());
+        tagged_item(
+            &mut builder,
+            &folder,
+            "01.mp3",
+            "/m/f/01.mp3",
+            None,
+            Some("Title One"),
+        );
+        tagged_item(
+            &mut builder,
+            &folder,
+            "02.mp3",
+            "/m/f/02.mp3",
+            None,
+            Some("Title Two"),
+        );
+
+        let view = MusicLibraryView::new(SharedIndex::new(builder.build()), Mode::Albums);
+        let albums = view.children(&ObjectId::root()).unwrap();
+        assert_eq!(titles(&albums), vec!["raw-folder-name"]);
+    }
+
+    #[test]
+    fn tag_driven_artist_grouping_stays_consistent_under_entry_and_children() {
+        // The strongest guard on the parent_id-reparenting correctness
+        // fix: walk_and_check_consistency already exists for the
+        // untagged proptest below, but that one never exercises real
+        // tags. Run it here against a fixture that forces tag-driven
+        // artist grouping across two differently-shaped real folders.
+        let mut builder = IndexBuilder::new();
+        let ac_dc = builder.add_container(&ObjectId::root(), "AC_DC".to_string());
+        let tnt = builder.add_container(&ac_dc, "TNT".to_string());
+        tagged_item(
+            &mut builder,
+            &tnt,
+            "01.mp3",
+            "/m/AC_DC/TNT/01.mp3",
+            Some("AC/DC"),
+            None,
+        );
+        let flat = builder.add_container(&ObjectId::root(), "Flat Album".to_string());
+        tagged_item(
+            &mut builder,
+            &flat,
+            "01.mp3",
+            "/m/flat/01.mp3",
+            Some("AC/DC"),
+            None,
+        );
+
+        let view = MusicLibraryView::new(SharedIndex::new(builder.build()), Mode::Artists);
+        walk_and_check_consistency(&view);
     }
 
     #[test]

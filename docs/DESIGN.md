@@ -236,10 +236,15 @@ future tag-reading provider can add real artist/album/genre fields; the
 `Metadata` struct already leaves room.
 
 `content::music_library::MusicLibraryView` is the grouping logic itself.
-It holds a `SharedIndex` clone, the same one `FolderMirror` reads, and
-walks `Container.parent_id` chains to find albums (a track's direct
-parent) and artists (that parent's own parent) — no separate index, no
-extra scan. `content::composite::CompositeContentSource` then mounts one
+It holds a `SharedIndex` clone, the same one `FolderMirror` reads. An
+album is still always a track's direct parent folder — no separate
+index, no extra scan — but since Phase 14, its displayed title and
+which artist it groups under prefer a real tag over the folder, when
+every track in that folder agrees on the tag (see `docs/PLAN.md`'s
+Phase 14 section). That's also how the same artist's albums merge into
+one Artists entry even when they sit in different real folder shapes —
+a proper `Artist/Album` tree and a flat top-level album folder, say.
+`content::composite::CompositeContentSource` then mounts one
 `ContentSource` per configured view under its own ID prefix, joined with
 `$` (`"albums$42"`) rather than MiniDLNA's `/`, since the router already
 rejects `/` inside an object ID and a different separator needed no
@@ -308,6 +313,20 @@ subfolders, not inside them) can never step outside a configured
 directory — the same containment property `core::http`'s
 `resolve_within_roots` enforces for every file this server serves,
 applied here rather than assumed.
+
+Phase 14 finally lets Albums/Artists grouping use the tag data Phase 12
+added, which it had ignored until now. Album identity is untouched —
+still the real folder that directly holds a track — but its display
+title and artist grouping now prefer a real tag over the folder when
+every track in that folder agrees on it (see `docs/PLAN.md`'s Phase 14
+section for the exact rule and why a disagreement, a real compilation,
+falls back to the plain Phase 8 heuristic instead of guessing). A tag-
+derived artist can span several real folders at once — a proper nested
+tree and a flat top-level album folder for the same artist, unified
+into one Artists entry — so it has no backing `Index` container of its
+own; `music_library.rs` hand-builds one with a synthetic id that can
+never collide with a real `Index`-allocated id (always a plain integer
+string).
 
 See [`PLAN.md`](PLAN.md) for what's next and why the phases are ordered the
 way they are.

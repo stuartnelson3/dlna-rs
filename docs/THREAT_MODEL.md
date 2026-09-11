@@ -152,13 +152,19 @@ propagating it, so a single malformed tag block can't abort a whole
 scan. Someone with write access to the configured media directory
 already has more direct ways to cause harm than a crafted tag block, so
 that access level itself stays out of scope, same as it always has.
-Albums/Artists grouping still uses folder-structure heuristics, not
-tags: that choice was about avoiding two disagreeing grouping
-mechanisms (see `docs/PLAN.md` Phase 8), not about deferring tag
-reading, which is why adding it in Phase 12 didn't need to touch
-grouping at all. The server's attacker-reachable parsing surface stays
-deliberately narrow: network input only, the three paths above. Tag
-reading doesn't widen it, since it never touches network input.
+Albums/Artists grouping used pure folder-structure heuristics through
+Phase 13, to avoid two disagreeing grouping mechanisms (see
+`docs/PLAN.md` Phase 8) — which is why adding tag reading in Phase 12
+didn't need to touch grouping at all. Phase 14 lifts that restriction,
+but reads only the same already-scanned, already-defensively-handled
+tag fields: a malformed or adversarial tag value can make a track's
+album/artist grouping wrong (it lands in the wrong bucket, or its own
+folder-based bucket, rather than the intended one), never crash the
+server or reach outside the config-provenance category tag reading
+already established. The server's attacker-reachable parsing surface
+stays deliberately narrow: network input only, the three paths above.
+Neither tag reading nor tag-based grouping widens it, since neither
+touches network input.
 
 Phase 13's external-cover-art-file lookup (`metadata::cover_files`)
 reads the same config-provenance category as tag reading: image files

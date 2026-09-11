@@ -912,9 +912,104 @@ over `GET /art/{id}`. Met, verified above.
 
 ---
 
+## Phase 14 — Tag-aware Albums/Artists grouping
+
+**Goal:** prefer a real tag over folder structure for an album's
+displayed title and its artist grouping, when the tag is trustworthy —
+including unifying the same artist's albums across different real
+folder shapes in the same library.
+
+Albums/Artists grouped by folder structure alone since Phase 8, chosen
+before any tag data existed, specifically to avoid two grouping
+mechanisms disagreeing on a messy library. Real use surfaced the real
+gap this leaves: many real albums are flat single-level folders
+directly under the media root (`AC-DC - Back in Black [2003 Epic
+Records Remaster]/track.flac`), with no wrapping artist folder — such
+an album's "artist" (its folder's parent) is the media root itself, so
+it was excluded from the Artists view entirely. Worse, the same real
+artist could appear split across a proper nested tree and several flat
+top-level folders in the same library, each showing up unrelated and
+ungrouped instead of as one artist.
+
+- [x] Album identity stays exactly what it was: the real `Index`
+      container that directly holds a track, same `ObjectId`. Only its
+      *displayed title* and *artist grouping* change, and only when a
+      real tag is trustworthy: `consistent_tag_value` checks every
+      track directly in that folder that carries the tag, and returns
+      the shared value only if none of them disagree (case/whitespace
+      folded). A missing tag on some tracks is a non-vote, not a
+      disagreement; a real disagreement (a genuine compilation) falls
+      back to the exact folder-based behavior Phase 8 shipped — no
+      crash, no fabricated single-artist bucket. A proper "Various
+      Artists" grouping stays a separate, deferred backlog item (see
+      After MVP below), not something this phase builds.
+- [x] Artist identity is now one of two kinds, resolved once per album,
+      per `Snapshot`: `Folder(ObjectId)` (Phase 8's exact heuristic,
+      unchanged) or `Tag(String)` (a normalized artist name). A `Tag`
+      artist has no backing real `Index` container — it can span
+      several real folders, or none consistently — so its `Container`
+      is hand-built with a synthetic id (`tag-artist:<normalized>`,
+      never colliding with a real `Index`-allocated id, since those are
+      always plain integer strings) and a deterministic display title
+      (the lexicographically smallest raw variant across every album
+      that resolved to it, not whichever a `HashMap` happens to iterate
+      first).
+- [x] `content::music_library::MusicLibraryView`'s internals were
+      restructured around this: `snapshot()` now resolves every album's
+      display title, artist key, and the final artist→albums map in one
+      pass; a new `album_container()` is the single place every album
+      `Container` gets built, so `albums()`, `albums_under_artist()`,
+      `recently_added_albums()`, and `entry()` can never disagree about
+      a title. `containers_for()`/`with_real_child_count()` were
+      deleted — no longer needed once every `Container` is correct at
+      the point it's built.
+- [x] `albums_under_artist()` now explicitly overwrites each returned
+      album's `parent_id` to the artist being browsed, rather than
+      trusting whatever the real `Index` recorded — necessary the
+      moment a tag redirects an album to an artist other than its real
+      folder-parent (a nested album whose own tags point to a different,
+      tag-unified artist than its real parent folder).
+- [x] The existing "a folder can be both an album and an artist" dual-
+      role exclusion (Phase 8) is now computed globally, over the final
+      resolved artist→albums map, instead of per-listing — required
+      once a tag can pull an album out from under its real folder-
+      parent's own artist bucket into an unrelated tag-derived one.
+
+**Verified:** `cargo build`/`test`/`fmt --check`/`clippy -D warnings`
+all clean (207 lib + integration tests). Every pre-existing test in
+`music_library.rs` passes unchanged — traced to be byte-identical for
+any untagged library, since `consistent_tag_value` on an all-`None`
+tag list always returns `None`. Six new unit tests cover: a nested
+album and a flat top-level album sharing one consistent artist tag
+merging into one artist; artist tags differing only in case/whitespace
+merging with a deterministic display title; inconsistent artist tags
+falling back to folder grouping with no crash and no fabricated
+bucket; a consistent album tag overriding the folder name for display,
+with `Mode::Albums`'s listing and `entry()`'s direct lookup agreeing;
+the inconsistent-album-tag fallback case; and a
+`walk_and_check_consistency` pass against a tag-driven fixture, the
+strongest guard on the `parent_id`-reparenting correctness fix. One new
+`composite.rs` test confirms a tag-derived id containing a literal `$`
+still round-trips through the `prefix$local_id` split. And by hand
+against a real running instance: a real mixed library (a nested
+`AC_DC/TNT` album, a flat top-level `AC-DC - Back in Black` album, both
+tagged `artist: AC/DC`, plus one untagged album) showed exactly two
+Artists entries — a merged "AC/DC" with `childCount="2"` listing both
+real albums with correct `parentID`s, and the untagged album's
+folder-based "Untagged" artist, unchanged — while the flat Albums view
+kept listing all three real album folders exactly as before.
+
+**Exit criterion:** the same real artist's albums, scattered across
+different real folder shapes, merge into one Artists entry when their
+tags agree; an untagged or inconsistently-tagged library's behavior is
+unchanged. Met, verified above.
+
+---
+
 ## After MVP
 
 Not phased yet — pick these up only as real need shows up, per the
 project's non-goals: client-specific quirk handling, a persisted index
 (`redb`) if startup time on a large library becomes a real problem,
-Various-Artists handling, inotify-based instant rescan.
+real "Various Artists" compilation bucketing, inotify-based instant
+rescan.

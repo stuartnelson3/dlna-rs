@@ -264,6 +264,44 @@ mod tests {
     }
 
     #[test]
+    fn a_tag_artist_id_containing_a_dollar_sign_round_trips_through_the_composite_prefix() {
+        // A tag-derived artist id (music_library's synthetic
+        // `tag-artist:<name>`) can carry an arbitrary tag value,
+        // including one with a literal '$' in it. The composite's own
+        // `prefix$local_id` split only ever splits on the *first* '$',
+        // so this must still round-trip correctly.
+        let mut builder = IndexBuilder::new();
+        let album = builder.add_container(&ObjectId::root(), "Album".to_string());
+        builder.add_item_with_tags(
+            &album,
+            "track.mp3".to_string(),
+            std::path::PathBuf::from("/m/album/track.mp3"),
+            1,
+            std::time::SystemTime::now(),
+            crate::index::TrackTags {
+                artist: Some("Ke$ha".to_string()),
+                album: None,
+                genre: None,
+                has_art: false,
+            },
+        );
+        let index = SharedIndex::new(builder.build());
+
+        let library = library_with(vec![View::Artists]);
+        let composite = CompositeContentSource::from_config(&library, index);
+
+        let root = composite.children(&ObjectId::root()).unwrap();
+        let artists_mount_id = root[0].id().clone();
+        let artists = composite.children(&artists_mount_id).unwrap();
+        assert_eq!(artists.len(), 1);
+        let artist_id = artists[0].id().clone();
+
+        let albums = composite.children(&artist_id).unwrap();
+        assert_eq!(albums.len(), 1);
+        assert_eq!(composite.entry(&artist_id).unwrap().id(), &artist_id);
+    }
+
+    #[test]
     fn every_view_kind_mounts_without_panicking() {
         let library = library_with(vec![
             View::Folders,

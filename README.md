@@ -12,7 +12,7 @@ be Plex or Jellyfin.
 
 ## Status
 
-Phases 0 through 9, and 11 through 13, are done. A real DLNA client found this
+Phases 0 through 9, and 11 through 14, are done. A real DLNA client found this
 server over SSDP, browsed its library, and played back FLAC and MP3
 with working seek. What is left is Phase 10, wiring up CI. See
 [`docs/PLAN.md`](docs/PLAN.md) for the phased plan this repo tracks
@@ -26,7 +26,9 @@ instead of GitHub issues.
 - Rescans the media directory on a timer, so new files show up without a
   restart.
 - Real Albums, Artists, and Recently Added views, computed live off the
-  index instead of a stale cache, with configurable counts.
+  index instead of a stale cache, with configurable counts. An artist's
+  albums merge into one Artists entry when their tags agree, even when
+  they sit in different real folder shapes on disk.
 - Real artist, album, and genre tags, read from each file once at scan
   time. Cover art too: an embedded picture in the file's own tag, or a
   `cover.jpg`/`folder.png`-style file or `Artwork` folder beside it,
