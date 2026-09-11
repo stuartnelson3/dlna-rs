@@ -14,6 +14,11 @@ jobs:
   audit:
     name: cargo audit
     runs-on: ubuntu-latest
+    # See ci.yml's own audit job for why this is needed: the action
+    # posts its result as a check run, which needs checks: write.
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@v4
       - uses: rustsec/audit-check@v2

@@ -57,6 +57,14 @@ jobs:
   audit:
     name: cargo audit
     runs-on: ubuntu-latest
+    # rustsec/audit-check posts its result as a GitHub check run via the
+    # API, which needs checks: write - the default GITHUB_TOKEN
+    # permissions on this repo don't grant that, so without this block
+    # the action itself fails ("Resource not accessible by integration")
+    # even when the underlying `cargo audit` found nothing wrong.
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@v4
       - uses: rustsec/audit-check@v2
