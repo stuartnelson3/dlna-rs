@@ -1092,6 +1092,51 @@ survives a restart. Met, verified above.
 
 ---
 
+## Post-Phase-15 fixes, found by querying a real deployed instance
+
+Two real bugs, found by browsing the user's actual real running server
+directly over the network (not guessed, not from a synthetic fixture)
+right after Phase 14/15 shipped.
+
+**A real DLNA client showed the entire Artists view as empty**, even
+though the server's own raw `ContentDirectory` response had all 447
+real entries. Root cause: Phase 14's synthetic tag-derived artist IDs
+(`tag-artist:<name>`) are built from the raw tag text, which can
+contain `&`, unlike every other ID in this project (always a plain
+digit string, never needing escaping before). `core::didl::render_one`
+wrote `id`/`parentID` attributes straight from `ObjectId`'s `Display`
+impl, with no escaping — so an artist like "Art Blakey & The Jazz
+Messengers" produced a raw, unescaped `&` inside an XML attribute
+value, which makes the *entire* DIDL-Lite document unparsable, not
+just that one entry. Confirmed directly: fetched the real server's
+full Artists listing, decoded the SOAP-escaped body, and fed it to a
+real XML parser, which failed at exactly that entry. Fixed by escaping
+`id`/`parentID` the same way `title` already was; new tests render a
+container/item with a `&` in a synthetic ID and assert the whole
+document parses.
+
+**Some track titles kept a leading number**, e.g. "01 Just Friends"
+instead of "Just Friends". Root cause: a disc-track filename
+convention (`"1-01 Just Friends.mp3"`, disc 1 track 01) — `metadata::
+filename::parse_track_number` only ever stripped one leading
+number-plus-separator, so it took "1" as the track number and left
+"01 Just Friends" as the title, leading zero and all. Fixed by
+recursing: whatever's left after stripping one prefix is tried again,
+and the innermost successful strip wins, so "1-01 Just Friends" now
+correctly yields track number 1 (the real per-disc number) and a
+clean title. Verified against the exact real filename pattern that
+triggered it, plus a case that confirms a purely numeric *title*
+("2112") doesn't get wrongly treated as a second track number.
+
+**Verified:** `cargo build`/`test`/`fmt --check`/`clippy -D warnings`
+all clean (224 lib + integration tests, 5 new: 2 for the escaping fix,
+3 for the track-number fix). The escaping fix was independently
+confirmed against a real running instance: tagged a real file with an
+`&`-containing artist name, fetched the real Browse response, decoded
+it, and confirmed a real XML parser now accepts it end to end.
+
+---
+
 ## After MVP
 
 Not phased yet — pick these up only as real need shows up, per the

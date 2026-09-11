@@ -166,6 +166,21 @@ stays deliberately narrow: network input only, the three paths above.
 Neither tag reading nor tag-based grouping widens it, since neither
 touches network input.
 
+One real gap did surface here, though — found by querying a real
+deployed instance, not by fuzzing: Phase 14's synthetic tag-derived
+artist IDs are built from raw tag text, and `core::didl::render_one`
+wrote that text into an XML attribute (`id`/`parentID`) without
+escaping, unlike every other field rendered there. An artist tag
+containing `&` (a real, ordinary tag value — "Art Blakey & The Jazz
+Messengers") made the *entire* DIDL-Lite response invalid XML, which a
+strict client-side parser rejects outright. Not a crash and not a
+boundary violation — the server still returned `200` with a
+well-formed SOAP envelope around a malformed inner document — but a
+real, client-visible failure from ordinary config-provenance data.
+Fixed by escaping every `id`/`parentID` the same way `title` already
+was; confirmed against a real running instance that the fix produces
+parseable output for the exact value that broke it.
+
 Phase 13's external-cover-art-file lookup (`metadata::cover_files`)
 reads the same config-provenance category as tag reading: image files
 the operator already placed under a configured media directory, never

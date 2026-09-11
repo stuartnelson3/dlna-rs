@@ -35,15 +35,16 @@ fn render_one(entry: &Entry, base_url: &str) -> String {
                 .map_or_else(|| "-1".to_string(), ToString::to_string);
             format!(
                 r#"<container id="{id}" parentID="{parent}" restricted="1" childCount="{count}"><dc:title>{title}</dc:title><upnp:class>object.container.storageFolder</upnp:class></container>"#,
-                id = c.id,
+                id = escape(c.id.to_string()),
+                parent = escape(parent),
                 count = c.child_count,
                 title = escape(&c.title),
             )
         }
         Entry::Item(i) => format!(
             r#"<item id="{id}" parentID="{parent}" restricted="1"><dc:title>{title}</dc:title>{extras}<upnp:class>object.item.audioItem.musicTrack</upnp:class><res protocolInfo="{protocol_info}" size="{size}">{url}</res></item>"#,
-            id = i.id,
-            parent = i.parent_id,
+            id = escape(i.id.to_string()),
+            parent = escape(i.parent_id.to_string()),
             title = escape(&i.title),
             extras = extra_item_fields(i, base_url),
             protocol_info = format::protocol_info(&i.path),
@@ -183,6 +184,44 @@ mod tests {
         let xml = render(&[entry], "http://192.168.1.5:8200");
         assert_well_formed(&xml);
         assert!(!xml.contains("<Live>"), "raw '<' should have been escaped");
+    }
+
+    /// Real regression: `content::music_library`'s tag-derived synthetic
+    /// artist IDs are built from the tag's own text (e.g.
+    /// `tag-artist:art blakey & the jazz messengers`), unlike every
+    /// other ID in this project, which is always a plain digit string.
+    /// An unescaped `&` in an XML attribute value makes the whole
+    /// document unparsable - not just that one entry - which is exactly
+    /// what made a real DLNA client report the entire Artists listing
+    /// as empty, confirmed against a real running instance.
+    #[test]
+    fn a_special_character_in_a_container_id_does_not_break_the_whole_document() {
+        let container = crate::index::Container {
+            id: crate::index::ObjectId::new("tag-artist:art blakey & the jazz messengers"),
+            parent_id: Some(crate::index::ObjectId::root()),
+            title: "Art Blakey & The Jazz Messengers".to_string(),
+            child_count: 2,
+        };
+        let xml = render(&[Entry::Container(container)], "http://192.168.1.5:8200");
+        assert_well_formed(&xml);
+    }
+
+    #[test]
+    fn a_special_character_in_an_items_parent_id_does_not_break_the_whole_document() {
+        let item = Item {
+            id: crate::index::ObjectId::new("42"),
+            parent_id: crate::index::ObjectId::new("tag-artist:ac/dc"),
+            title: "Track".to_string(),
+            path: PathBuf::from("/music/Track.mp3"),
+            size: 1,
+            modified: SystemTime::UNIX_EPOCH,
+            artist: None,
+            album: None,
+            genre: None,
+            has_art: false,
+        };
+        let xml = render(&[Entry::Item(item)], "http://192.168.1.5:8200");
+        assert_well_formed(&xml);
     }
 
     fn item_with_tags(tags: crate::index::TrackTags) -> Entry {
