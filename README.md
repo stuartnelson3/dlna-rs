@@ -12,7 +12,7 @@ be Plex or Jellyfin.
 
 ## Status
 
-Phases 0 through 9, and 11 through 14, are done. A real DLNA client found this
+Phases 0 through 9, and 11 through 15, are done. A real DLNA client found this
 server over SSDP, browsed its library, and played back FLAC and MP3
 with working seek. What is left is Phase 10, wiring up CI. See
 [`docs/PLAN.md`](docs/PLAN.md) for the phased plan this repo tracks
@@ -33,6 +33,9 @@ instead of GitHub issues.
   time. Cover art too: an embedded picture in the file's own tag, or a
   `cover.jpg`/`folder.png`-style file or `Artwork` folder beside it,
   whichever the album actually uses.
+- An optional persistent cache for those tag reads (`[tag_cache]`, off
+  by default), so a large library's repeated rescans skip re-parsing a
+  file's tags once nothing about it has changed.
 
 ## What it does not do
 

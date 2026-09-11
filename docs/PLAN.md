@@ -1006,10 +1006,95 @@ unchanged. Met, verified above.
 
 ---
 
+## Phase 15 — Persistent tag-read cache (redb)
+
+**Goal:** an unchanged file's tags come from a small on-disk cache
+instead of a real `lofty` parse, on every rescan after the first —
+including across a process restart — fixing the real complaint that
+scanning a large library was taking a long time on every single
+rescan, not just the first one.
+
+A prior research pass compared `redb` against a full pure-Rust SQLite
+rewrite (`turso`) for this. Verdict: `redb`, used narrowly as a
+`(path, size, mtime) -> tags` cache, not a full persisted index with
+stable object IDs — nothing in this project needs ID stability across
+rescans (`rescan.rs`'s own doc comment already said as much, since
+Phase 7).
+
+Real `redb` 4.2.0 needs rustc 1.90; this project's `rust-version` was
+1.85, so adding it meant a real, deliberate MSRV bump, not a silent
+one — confirmed with the user before making it.
+
+- [x] New `metadata::tag_cache::CachedTagMetadata<P>`: generic over the
+      inner `MetadataProvider` (real production code always
+      instantiates it over `TagMetadata`; the generic exists so this
+      module's own tests can substitute a call-counting fake instead of
+      exercising real `lofty` parsing). `redb` is named in exactly one
+      file — the same encapsulation rule `metadata::tags` already
+      follows for `lofty`. Only `artist`/`album`/`genre`/`has_art` are
+      cached; title and track number stay uncached (cheap,
+      filename-only, so a rename shows up immediately with no
+      invalidation logic needed for them).
+- [x] Every write uses `Durability::None`, not the default
+      `Durability::Immediate` — this cache is fully rebuildable, so a
+      crash losing the last few writes just means a few files get
+      re-parsed next time, never a correctness problem, and the
+      speedup is real: `Durability::None` is what makes a write cheap
+      enough to do on every scanned file.
+- [x] New `[tag_cache]` config table (`enabled`, `path`), off by
+      default — the first feature since Phase 12 to get a config
+      toggle, because enabling it means writing a file to disk, and
+      `systemd/dlna-rs.service`'s `ProtectSystem=strict` grants no
+      writable path anywhere by default. `Config::load`'s validation
+      pass rejects `enabled = true` with an empty `path` at load time,
+      not as a runtime surprise. A comment in the unit file documents
+      the matching `StateDirectory=dlna-rs` needed to actually use it.
+- [x] Deletes are handled, not just documented as a limitation: a new
+      `MetadataProvider::retain_only` method (default no-op) lets
+      `rescan_once` tell whatever provider it's using which paths the
+      scan actually found, once per rescan. `CachedTagMetadata`
+      overrides it to drop any cached entry for a path no longer
+      present — a two-pass read-then-write, safe as a rebuildable
+      cache even with a race between the passes. Without this, a
+      long-running deployment's cache file would grow forever as files
+      get removed from the library over time.
+- [x] Real bug found and fixed along the way, unrelated to caching
+      itself but found while touching `scanner.rs`: an item's DIDL
+      title was always the raw filename (`"01 - Track.mp3"`), never
+      the parsed one (`"Track"`) `FilenameMetadata`/`TagMetadata`
+      already computed — the scanner discarded `read.title` and reused
+      its own separately-derived, unparsed filename string instead.
+      Fixed to use the parsed title; every test asserting the old raw
+      filename as a title was updated to the correct parsed value.
+
+**Verified:** `cargo build`/`test`/`fmt --check`/`clippy -D warnings`
+all clean (219 lib + integration tests). `cargo audit`/`cargo deny
+check` both clean with `redb`/`serde_json` added — no new advisories,
+license, or ban findings, only the pre-existing accepted `paste`
+finding. New unit tests in `tag_cache` cover hit/miss/prune behavior
+against a counting fake provider (isolated from real `lofty`
+behavior), a garbage cached value degrading to a miss rather than a
+panic, and persistence across separately-opened instances at the same
+path (simulating a restart). A new perf tripwire in `scanner.rs`
+scans a real 300-file tagged fixture twice against a `CachedTagMetadata`
+and asserts the warm pass is at least 2x faster than the cold one —
+measured on this machine: **176.5ms cold, 3.8ms warm, about a 45x
+speedup**. A new `rescan.rs` test confirms `retain_only` is called with
+exactly the files still present after a file is deleted between two
+rescans. By hand against a running instance: `[tag_cache]` enabled
+against a real tagged library created the `.redb` file, Browse output
+was unaffected, and the cache file persisted correctly across a
+process restart.
+
+**Exit criterion:** a rescan of an unchanged library is measurably
+faster with `[tag_cache]` enabled than without it, and the cache
+survives a restart. Met, verified above.
+
+---
+
 ## After MVP
 
 Not phased yet — pick these up only as real need shows up, per the
-project's non-goals: client-specific quirk handling, a persisted index
-(`redb`) if startup time on a large library becomes a real problem,
-real "Various Artists" compilation bucketing, inotify-based instant
+project's non-goals: client-specific quirk handling, real "Various
+Artists" compilation bucketing, inotify-based instant
 rescan.

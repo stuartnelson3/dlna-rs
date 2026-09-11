@@ -72,28 +72,31 @@ fn scan_one_directory(
             let id = builder.add_container(&parent, title);
             container_at_depth.truncate(depth);
             container_at_depth.push(id);
-        } else if entry.file_type().is_file() && is_audio_extension(entry.path()) {
-            if let Ok(metadata) = entry.metadata() {
-                // title/track_number aren't used here - the scanner
-                // already derives title from the filename above, and
-                // track number only matters for in-album sort order,
-                // read fresh at Browse time by `content::music_library`.
-                let read = tags.metadata(entry.path());
-                let track_tags = TrackTags {
-                    artist: read.artist,
-                    album: read.album,
-                    genre: read.genre,
-                    has_art: read.has_art,
-                };
-                builder.add_item_with_tags(
-                    &parent,
-                    title,
-                    entry.path().to_path_buf(),
-                    metadata.len(),
-                    metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                    track_tags,
-                );
-            }
+        } else if entry.file_type().is_file()
+            && is_audio_extension(entry.path())
+            && let Ok(metadata) = entry.metadata()
+        {
+            // `read.title` is the parsed title (track number and
+            // extension stripped, e.g. "01 - Track.mp3" -> "Track") -
+            // not the raw filename computed above, which containers use
+            // as-is. Track number itself isn't used here: it only
+            // matters for in-album sort order, read fresh at Browse
+            // time by `content::music_library`.
+            let read = tags.metadata(entry.path());
+            let track_tags = TrackTags {
+                artist: read.artist,
+                album: read.album,
+                genre: read.genre,
+                has_art: read.has_art,
+            };
+            builder.add_item_with_tags(
+                &parent,
+                read.title,
+                entry.path().to_path_buf(),
+                metadata.len(),
+                metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                track_tags,
+            );
         }
         // Anything else - a non-audio file, a symlink left unresolved
         // because follow_symlinks is off, a file we couldn't stat - is
@@ -208,8 +211,8 @@ mod tests {
     fn exact_fixture_tree_matches_expected_shape() {
         let f = fixture(|root| {
             fs::create_dir_all(root.join("Artist/Album")).unwrap();
-            fs::write(root.join("Artist/Album/01 - Track.flac"), b"").unwrap();
-            fs::write(root.join("Artist/Album/02 - Track.mp3"), b"").unwrap();
+            fs::write(root.join("Artist/Album/01 - First.flac"), b"").unwrap();
+            fs::write(root.join("Artist/Album/02 - Second.mp3"), b"").unwrap();
             fs::write(root.join("Artist/Album/cover.jpg"), b"").unwrap();
             fs::write(root.join("Artist/Album/.DS_Store"), b"").unwrap();
         });
@@ -235,7 +238,9 @@ mod tests {
             })
             .collect();
         titles.sort_unstable();
-        assert_eq!(titles, vec!["01 - Track.flac", "02 - Track.mp3"]);
+        // The parsed title (track number and extension stripped), not
+        // the raw filename - see `scan_one_directory`'s item branch.
+        assert_eq!(titles, vec!["First", "Second"]);
     }
 
     fn top_level_name(path: &Path) -> String {
@@ -282,6 +287,49 @@ mod tests {
         };
         assert_eq!(item.artist.as_deref(), Some("Scan Test Artist"));
         assert_eq!(item.album.as_deref(), Some("Scan Test Album"));
+    }
+
+    /// Not a tight benchmark - a tripwire, same philosophy as
+    /// `music_library.rs`'s own `browsing_a_large_library_stays_fast`:
+    /// a generous margin that stays green on a slower or loaded
+    /// machine, but fails hard the moment the persistent tag cache
+    /// stops actually skipping the `lofty` parse on an unchanged file.
+    /// Exercises the real, reported complaint's exact code path -
+    /// `scanner::scan` against a `CachedTagMetadata`, not an isolated
+    /// cache-only micro-benchmark.
+    #[test]
+    fn a_second_scan_with_a_warm_cache_is_meaningfully_faster_than_the_first() {
+        const FILE_COUNT: usize = 300;
+
+        let f = fixture(|root| {
+            for n in 0..FILE_COUNT {
+                write_tagged_mp3(&root.join(format!("track-{n:04}.mp3")));
+            }
+        });
+        let config = media_config(&f.root, &[]);
+
+        let cache_dir = tempfile::tempdir().unwrap();
+        let tags = crate::metadata::tag_cache::CachedTagMetadata::open(
+            &cache_dir.path().join("cache.redb"),
+            crate::metadata::tags::TagMetadata::new(vec![f.root.clone()]),
+        )
+        .unwrap();
+
+        let cold_started = std::time::Instant::now();
+        let cold_index = scan(&config, &tags);
+        let cold_elapsed = cold_started.elapsed();
+
+        let warm_started = std::time::Instant::now();
+        let warm_index = scan(&config, &tags);
+        let warm_elapsed = warm_started.elapsed();
+
+        assert_eq!(cold_index.len(), warm_index.len());
+        println!("cold scan ({FILE_COUNT} files): {cold_elapsed:?}, warm scan: {warm_elapsed:?}");
+        assert!(
+            warm_elapsed * 2 < cold_elapsed,
+            "expected the warm (cached) scan to be at least 2x faster than the \
+             cold one - cold={cold_elapsed:?} warm={warm_elapsed:?}"
+        );
     }
 
     #[test]

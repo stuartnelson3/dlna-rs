@@ -177,6 +177,24 @@ impl Index {
         })
     }
 
+    /// Every item's real path, in no particular order. Used only to
+    /// prune a persistent tag cache of entries for files no longer in
+    /// the library - see `core::metadata_provider::MetadataProvider::retain_only`.
+    /// A flat scan of every node, not a tree walk: this index already
+    /// stores every node in one map, so there's no need to reach for
+    /// `content::music_library`'s recursive `all_items` (that one
+    /// walks `children()` specifically to produce Browse-ordered
+    /// results, a different job).
+    pub fn item_paths(&self) -> Vec<PathBuf> {
+        self.nodes
+            .values()
+            .filter_map(|node| match &node.kind {
+                NodeKind::Item { path, .. } => Some(path.clone()),
+                NodeKind::Container { .. } => None,
+            })
+            .collect()
+    }
+
     pub fn len(&self) -> usize {
         self.nodes.len()
     }

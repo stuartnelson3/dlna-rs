@@ -79,5 +79,13 @@ RestrictAddressFamilies=AF_INET AF_NETLINK
 # default, and this server never writes to its media library anyway.
 ReadOnlyPaths=/srv/media
 
+# Only needed if you enable [tag_cache] in the config (off by default).
+# That feature writes a small database file to speed up repeated
+# rescans, and ProtectSystem=strict grants no writable path for it on
+# its own. Uncomment this line, and point tag_cache.path at
+# /var/lib/dlna-rs/tags.redb - systemd creates that directory and
+# grants write access to it even under ProtectSystem=strict.
+#StateDirectory=dlna-rs
+
 [Install]
 WantedBy=multi-user.target

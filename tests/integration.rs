@@ -444,7 +444,15 @@ async fn start_server_with_rescan(
     // on_startup=false: the fixture's initial scan above already covers
     // "on_startup=true" (Phase 1's own config option); this test is
     // specifically about the periodic re-scan.
-    let rescan_handle = tokio::spawn(dlna_rs::rescan::run(media, shared_index, interval, false));
+    let scan_tags =
+        dlna_rs::rescan::build_tags(&dlna_rs::config::TagCacheConfig::default(), media.roots());
+    let rescan_handle = tokio::spawn(dlna_rs::rescan::run(
+        media,
+        shared_index,
+        interval,
+        false,
+        scan_tags,
+    ));
     (format!("http://{addr}"), dir, http_handle, rescan_handle)
 }
 
@@ -558,9 +566,11 @@ async fn new_file_appears_after_one_rescan_interval_with_no_restart() {
     let root_didl = browse_didl(&base, "0").await;
     let media_dir_id = extract_attr(&root_didl, "container", "id");
 
+    // Titles are parsed (track number and extension stripped), not the
+    // raw filename - "01 - Track.mp3" scans to "Track".
     let before = browse_didl(&base, &media_dir_id).await;
-    assert!(before.contains("01 - Track.mp3"));
-    assert!(!before.contains("02 - New Track.mp3"));
+    assert!(before.contains(">Track<"));
+    assert!(!before.contains(">New Track<"));
 
     // Add a file after the server (and rescan timer) are already running -
     // this is the "no restart needed" part of the exit criterion.
@@ -569,8 +579,8 @@ async fn new_file_appears_after_one_rescan_interval_with_no_restart() {
     tokio::time::sleep(interval * 4).await;
 
     let after = browse_didl(&base, &media_dir_id).await;
-    assert!(after.contains("01 - Track.mp3"));
-    assert!(after.contains("02 - New Track.mp3"));
+    assert!(after.contains(">Track<"));
+    assert!(after.contains(">New Track<"));
 }
 
 /// A 1x1 transparent PNG - the smallest real, valid PNG there is.

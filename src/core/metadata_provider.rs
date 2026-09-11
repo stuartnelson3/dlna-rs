@@ -13,7 +13,7 @@
 //! per scan would repeat Phase 8's bug 4: real work, done once, turned
 //! into real work done on every request.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Metadata {
@@ -27,4 +27,14 @@ pub struct Metadata {
 
 pub trait MetadataProvider: Send + Sync {
     fn metadata(&self, path: &Path) -> Metadata;
+
+    /// Called once per full scan, after every file has been visited,
+    /// with the complete set of paths the scan actually found. A
+    /// stateful provider (a persistent cache, `metadata::tag_cache`)
+    /// uses this to drop any record for a path no longer part of the
+    /// library. The default does nothing - `FilenameMetadata`/
+    /// `TagMetadata` hold no state to prune.
+    fn retain_only(&self, live_paths: &[PathBuf]) {
+        let _ = live_paths;
+    }
 }

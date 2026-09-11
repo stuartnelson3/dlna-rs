@@ -178,6 +178,18 @@ test proves the lookup refuses a cover file sitting just outside a
 configured root even when a plain "check the parent directory" search
 would have found it.
 
+Phase 15's persistent tag cache (`metadata::tag_cache`, off by
+default) writes and reads back its own file, a new kind of on-disk
+input this process didn't have before — but it stays in the same
+config-provenance category as everything else here: the operator
+chooses whether it's enabled and where it lives, it's never reachable
+from the network, and a corrupted or hand-edited cache file degrades
+to "treated as a cache miss, re-read the real file," never a crash
+(every deserialize failure is handled the same way a missing entry
+is). A cache write's own failure is swallowed for the same reason a
+scan already tolerates one bad file's tags: this is a rebuildable
+optimization, not a correctness-critical store.
+
 The Phase 7 rescan timer doesn't change this. It re-walks the *configured*
 media directories on a schedule — config-provenance paths the operator
 chose, not anything derived from network input — using the same scanner

@@ -4,4 +4,5 @@
 
 mod cover_files;
 pub(crate) mod filename;
+pub(crate) mod tag_cache;
 pub mod tags;

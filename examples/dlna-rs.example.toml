@@ -28,3 +28,12 @@ on_startup = true
 
 [logging]
 level = "debug"
+
+# Off by default. Speeds up repeated rescans of a large library by
+# caching tag reads to disk, keyed by each file's path, size, and
+# modification time. Needs a real writable path - see
+# systemd/dlna-rs.service's StateDirectory= comment if running under
+# that unit.
+#[tag_cache]
+#enabled = true
+#path = "/var/lib/dlna-rs/tags.redb"

@@ -486,10 +486,10 @@ impl ContentSource for MusicLibraryView {
             let snapshot = self.snapshot();
             if snapshot.album_ids.contains(id) {
                 let mut container = self.album_container(&snapshot, id)?;
-                if matches!(self.mode, Mode::Artists) {
-                    if let Some(facts) = snapshot.album_facts.get(id) {
-                        container.parent_id = Some(facts.artist_id.clone());
-                    }
+                if matches!(self.mode, Mode::Artists)
+                    && let Some(facts) = snapshot.album_facts.get(id)
+                {
+                    container.parent_id = Some(facts.artist_id.clone());
                 }
                 return Some(Entry::Container(container));
             }

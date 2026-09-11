@@ -157,6 +157,7 @@ async fn main() -> ExitCode {
     let content_source = CompositeContentSource::from_config(&config.library, shared_index.clone());
 
     let media_roots: Vec<PathBuf> = config.media.roots();
+    let scan_tags = rescan::build_tags(&config.tag_cache, media_roots.clone());
 
     let http = match HttpServer::bind(
         interface_addr,
@@ -199,6 +200,7 @@ async fn main() -> ExitCode {
         shared_index,
         config.rescan.interval,
         config.rescan.on_startup,
+        scan_tags,
     ));
 
     wait_for_shutdown().await;

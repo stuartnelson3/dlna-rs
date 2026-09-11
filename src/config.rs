@@ -17,6 +17,8 @@ pub struct Config {
     pub rescan: RescanConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub tag_cache: TagCacheConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -172,6 +174,29 @@ impl Default for LoggingConfig {
     }
 }
 
+/// A persistent on-disk cache of tag-read results (see
+/// `metadata::tag_cache`), off by default. Unlike every other feature
+/// added since Phase 12, this one gets an explicit toggle: enabling it
+/// means writing a file to disk, and this project's own
+/// `systemd/dlna-rs.service` locks the filesystem read-only by default
+/// (`ProtectSystem=strict`) with no writable path granted anywhere -
+/// caching can't silently assume one exists.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct TagCacheConfig {
+    pub enabled: bool,
+    pub path: PathBuf,
+}
+
+impl Default for TagCacheConfig {
+    fn default() -> Self {
+        TagCacheConfig {
+            enabled: false,
+            path: PathBuf::new(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ConfigError {
     Read {
@@ -186,6 +211,7 @@ pub enum ConfigError {
     PrivilegedPort(u16),
     InvalidUuid(String),
     InvalidLogLevel(String),
+    TagCachePathRequired,
 }
 
 impl fmt::Display for ConfigError {
@@ -215,6 +241,12 @@ impl fmt::Display for ConfigError {
             ConfigError::InvalidLogLevel(value) => write!(
                 f,
                 "logging.level is {value:?}; expected one of: off, error, warn, info, debug, trace"
+            ),
+            ConfigError::TagCachePathRequired => write!(
+                f,
+                "tag_cache.enabled is true, but tag_cache.path is empty; \
+                 set it to a real writable path, e.g. \"/var/lib/dlna-rs/tags.redb\" \
+                 (see systemd/dlna-rs.service for the matching StateDirectory= setup)"
             ),
         }
     }
@@ -256,6 +288,9 @@ impl Config {
         }
         if self.logging.level.parse::<log::LevelFilter>().is_err() {
             return Err(ConfigError::InvalidLogLevel(self.logging.level.clone()));
+        }
+        if self.tag_cache.enabled && self.tag_cache.path.as_os_str().is_empty() {
+            return Err(ConfigError::TagCachePathRequired);
         }
         Ok(())
     }
@@ -362,6 +397,47 @@ mod tests {
         assert!(matches!(
             Config::load(&path).unwrap_err(),
             ConfigError::InvalidLogLevel(_)
+        ));
+    }
+
+    #[test]
+    fn tag_cache_defaults_to_disabled() {
+        let (_dir, path) = write_config(MINIMAL);
+        let config = Config::load(&path).expect("minimal config should load");
+        assert!(!config.tag_cache.enabled);
+    }
+
+    #[test]
+    fn tag_cache_enabled_with_a_real_path_loads() {
+        let contents = format!(
+            "{MINIMAL}\n[tag_cache]\nenabled = true\npath = \"/var/lib/dlna-rs/tags.redb\"\n"
+        );
+        let (_dir, path) = write_config(&contents);
+        let config = Config::load(&path).expect("a real path should be accepted");
+        assert!(config.tag_cache.enabled);
+        assert_eq!(
+            config.tag_cache.path,
+            PathBuf::from("/var/lib/dlna-rs/tags.redb")
+        );
+    }
+
+    #[test]
+    fn tag_cache_enabled_with_no_path_is_rejected() {
+        let contents = format!("{MINIMAL}\n[tag_cache]\nenabled = true\n");
+        let (_dir, path) = write_config(&contents);
+        assert!(matches!(
+            Config::load(&path).unwrap_err(),
+            ConfigError::TagCachePathRequired
+        ));
+    }
+
+    #[test]
+    fn tag_cache_rejects_unknown_field() {
+        let contents = format!("{MINIMAL}\n[tag_cache]\nenabled = false\ntypo = 1\n");
+        let (_dir, path) = write_config(&contents);
+        assert!(matches!(
+            Config::load(&path).unwrap_err(),
+            ConfigError::Parse { .. }
         ));
     }
 }

@@ -328,6 +328,17 @@ own; `music_library.rs` hand-builds one with a synthetic id that can
 never collide with a real `Index`-allocated id (always a plain integer
 string).
 
+Phase 15 adds `metadata::tag_cache::CachedTagMetadata`, a persistent
+on-disk cache in front of `TagMetadata`'s real `lofty` reads, backed by
+`redb` and confined to that one module the same way `lofty` is confined
+to `metadata::tags`. It's off by default (`[tag_cache]`) - the first
+config toggle since Phase 12, because unlike every prior addition this
+one needs a real writable path, which `systemd/dlna-rs.service`'s
+default sandboxing doesn't grant. `core::metadata_provider::MetadataProvider`
+gained one new method, `retain_only` (default no-op), so `rescan_once`
+can tell a stateful provider which paths are still real after a scan,
+without `FilenameMetadata`/`TagMetadata` needing to care.
+
 See [`PLAN.md`](PLAN.md) for what's next and why the phases are ordered the
 way they are.
 
@@ -400,6 +411,18 @@ module: nothing outside `metadata::tags` calls it, so it stays as
 private as Rust allows — the same grep check as everywhere else, just
 answering "not even `pub(crate)`" this time instead of one of the more
 open answers.
+
+Phase 15 added `metadata::tag_cache`, `pub(crate)` rather than
+`pub(super)`: unlike `cover_files`, its one real caller,
+`rescan::build_tags`, lives in a *sibling* top-level module, not inside
+`metadata` itself, so it needs crate-wide (not just `metadata`-wide)
+visibility. `main.rs` never names `CachedTagMetadata` or
+`MetadataProvider` directly - it only holds the opaque `Arc` that
+`rescan::build_tags` (itself `pub`, since `main.rs` does call that one)
+hands back, inferred through that function's own return type. That
+indirection is why `build_tags` lives in `rescan.rs`, not `main.rs`,
+even though the decision it makes (`[tag_cache]` on or off) is read
+straight out of `main.rs`'s own `Config`.
 
 ## Config
 
