@@ -191,15 +191,7 @@ impl HttpServer {
         method: &Method,
         headers: &HeaderMap,
     ) -> Response<Full<Bytes>> {
-        let Some(Entry::Item(item)) = self.content_source.entry(id) else {
-            return not_found();
-        };
-
-        let Ok(resolved) = self.verify_within_roots(&item.path).await else {
-            log::warn!(
-                "item {id} path {} resolved outside the configured media roots; refusing to serve",
-                item.path.display()
-            );
+        let Some(resolved) = self.resolve_item_path(id, "serve").await else {
             return not_found();
         };
 
@@ -244,15 +236,7 @@ impl HttpServer {
     /// simpler handler is the deliberate trade for that (see
     /// `core::art_source`'s doc comment).
     async fn handle_art(&self, id: &ObjectId) -> Response<Full<Bytes>> {
-        let Some(Entry::Item(item)) = self.content_source.entry(id) else {
-            return not_found();
-        };
-
-        let Ok(resolved) = self.verify_within_roots(&item.path).await else {
-            log::warn!(
-                "item {id} path {} resolved outside the configured media roots; refusing to serve its art",
-                item.path.display()
-            );
+        let Some(resolved) = self.resolve_item_path(id, "serve its art").await else {
             return not_found();
         };
 
@@ -266,6 +250,28 @@ impl HttpServer {
             .header("Content-Length", art.bytes.len().to_string())
             .body(Full::new(art.bytes))
             .expect("a real MIME string and byte length are always valid header values")
+    }
+
+    /// Resolves `id` to a real, verified-within-roots file path, or
+    /// `None` (already logged) if it isn't a real item or its path
+    /// resolves outside the configured media roots - the shared
+    /// preamble `handle_item`/`handle_art` both need before doing
+    /// anything specific to serving the file or its art. `purpose`
+    /// names what the caller is about to do, for the warning log line.
+    async fn resolve_item_path(&self, id: &ObjectId, purpose: &str) -> Option<PathBuf> {
+        let Some(Entry::Item(item)) = self.content_source.entry(id) else {
+            return None;
+        };
+        match self.verify_within_roots(&item.path).await {
+            Ok(resolved) => Some(resolved),
+            Err(_) => {
+                log::warn!(
+                    "item {id} path {} resolved outside the configured media roots; refusing to {purpose}",
+                    item.path.display()
+                );
+                None
+            }
+        }
     }
 
     async fn verify_within_roots(&self, path: &Path) -> std::io::Result<PathBuf> {

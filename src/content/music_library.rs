@@ -85,27 +85,46 @@ impl MusicLibraryView {
     /// tracks, and re-walking the whole tree once per album or per
     /// artist turns one Browse call into a browse-call-shaped denial of
     /// service against itself.
+    ///
+    /// Five steps, each named for what it does: resolve every album's
+    /// own facts, group those albums by artist, turn each group into a
+    /// real or hand-built artist `Container`, drop the one
+    /// dual-role-folder contradiction that can arise from that
+    /// grouping, then flatten each album's resolved artist back onto
+    /// its own facts for `album_container`'s later use.
     fn snapshot(&self) -> Snapshot {
         let items = self.all_items();
         let album_ids: HashSet<ObjectId> =
             items.iter().map(|item| item.parent_id.clone()).collect();
         let by_album = Self::group_items_by_parent(&items);
 
-        // Per album: its real container, its tag-preferred display
-        // title, and which artist it resolves under. `artist_key` is
-        // `None` for a true orphan (no consistent artist tag, and no
-        // real artist folder above it) - excluded from Artists, same as
-        // always. `artist_raw_name` keeps the tag's original casing,
-        // only for the `Tag` case, for picking a deterministic display
-        // title once albums are grouped by artist below.
-        struct Resolved {
-            display_title: String,
-            artist_key: Option<ArtistKey>,
-            artist_raw_name: Option<String>,
-        }
+        let resolved = self.resolve_album_facts(&by_album);
+        let by_artist_key = Self::group_albums_by_artist_key(&resolved);
+        let mut artists = self.build_artist_containers(&resolved, by_artist_key);
+        Self::apply_dual_role_exclusion(&mut artists);
+        let album_facts = Self::build_album_facts_map(&resolved);
 
-        let mut resolved: HashMap<ObjectId, Resolved> = HashMap::new();
-        for (album_id, tracks) in &by_album {
+        Snapshot {
+            items,
+            album_ids,
+            album_facts,
+            artists,
+        }
+    }
+
+    /// Per album: its tag-preferred display title, and which artist it
+    /// resolves under. `artist_key` is `None` for a true orphan (no
+    /// consistent artist tag, and no real artist folder above it) -
+    /// excluded from Artists, same as always. `artist_raw_name` keeps
+    /// the tag's original casing, only for the `Tag` case, for picking
+    /// a deterministic display title once albums are grouped by artist
+    /// in `build_artist_containers`.
+    fn resolve_album_facts(
+        &self,
+        by_album: &HashMap<ObjectId, Vec<Item>>,
+    ) -> HashMap<ObjectId, Resolved> {
+        let mut resolved = HashMap::new();
+        for (album_id, tracks) in by_album {
             let Some(Entry::Container(real_container)) = self.index.entry(album_id) else {
                 continue;
             };
@@ -135,9 +154,16 @@ impl MusicLibraryView {
                 },
             );
         }
+        resolved
+    }
 
+    /// Every album that resolved to an artist key, grouped by that key
+    /// - a true orphan (`artist_key: None`) is simply absent here.
+    fn group_albums_by_artist_key(
+        resolved: &HashMap<ObjectId, Resolved>,
+    ) -> HashMap<ArtistKey, Vec<ObjectId>> {
         let mut by_artist_key: HashMap<ArtistKey, Vec<ObjectId>> = HashMap::new();
-        for (album_id, r) in &resolved {
+        for (album_id, r) in resolved {
             if let Some(key) = &r.artist_key {
                 by_artist_key
                     .entry(key.clone())
@@ -145,12 +171,25 @@ impl MusicLibraryView {
                     .push(album_id.clone());
             }
         }
+        by_artist_key
+    }
 
-        let mut artists: HashMap<ObjectId, ArtistEntry> = HashMap::new();
+    /// One `ArtistEntry` per artist key: a real folder-artist re-fetched
+    /// fresh (its own title/parent are unaffected by this feature), or
+    /// a tag-derived artist hand-built from scratch, since it has no
+    /// backing real container of its own - it may span several real
+    /// folders, or none consistently. A tag-derived artist's display
+    /// title is the lexicographically smallest raw variant across every
+    /// album that resolved to it: deterministic, not dependent on
+    /// `HashMap` iteration order.
+    fn build_artist_containers(
+        &self,
+        resolved: &HashMap<ObjectId, Resolved>,
+        by_artist_key: HashMap<ArtistKey, Vec<ObjectId>>,
+    ) -> HashMap<ObjectId, ArtistEntry> {
+        let mut artists = HashMap::new();
         for (key, album_ids_for_artist) in by_artist_key {
             let container = match &key {
-                // A real folder-artist: re-fetch it fresh, since its own
-                // real title/parent are unaffected by this feature.
                 ArtistKey::Folder(id) => match self.index.entry(id) {
                     Some(Entry::Container(mut c)) => {
                         c.child_count = album_ids_for_artist.len();
@@ -158,12 +197,6 @@ impl MusicLibraryView {
                     }
                     _ => continue,
                 },
-                // A tag-derived artist has no backing real container -
-                // it may span several real folders, or none
-                // consistently - so it's hand-built. Its display title
-                // is the lexicographically smallest raw variant across
-                // every album that resolved to it: deterministic, not
-                // dependent on `HashMap` iteration order.
                 ArtistKey::Tag(normalized) => {
                     let display_title = album_ids_for_artist
                         .iter()
@@ -186,18 +219,21 @@ impl MusicLibraryView {
                 },
             );
         }
+        artists
+    }
 
-        // A folder can, in principle, both hold a track directly (an
-        // album) and be some other album's resolved artist (real folder
-        // or - now - a tag match). Such a folder gets its own top-level
-        // artist entry, so its album role is dropped wherever it would
-        // otherwise be listed under one - listing it twice, in two
-        // different roles, is a contradiction `entry()` can't answer for
-        // both at once. Same trade-off as the orphan-track exclusion
-        // this module's doc comment describes. This has to run globally,
-        // after every artist's albums are known, since a tag can now
-        // pull an album out from under its real folder-parent's own
-        // artist bucket into an unrelated tag-derived one.
+    /// A folder can, in principle, both hold a track directly (an
+    /// album) and be some other album's resolved artist (real folder
+    /// or - now - a tag match). Such a folder gets its own top-level
+    /// artist entry, so its album role is dropped wherever it would
+    /// otherwise be listed under one - listing it twice, in two
+    /// different roles, is a contradiction `entry()` can't answer for
+    /// both at once. Same trade-off as the orphan-track exclusion this
+    /// module's doc comment describes. This has to run globally, after
+    /// every artist's albums are known, since a tag can now pull an
+    /// album out from under its real folder-parent's own artist bucket
+    /// into an unrelated tag-derived one.
+    fn apply_dual_role_exclusion(artists: &mut HashMap<ObjectId, ArtistEntry>) {
         let artist_id_set: HashSet<ObjectId> = artists.keys().cloned().collect();
         for entry in artists.values_mut() {
             entry
@@ -205,8 +241,15 @@ impl MusicLibraryView {
                 .retain(|album_id| !artist_id_set.contains(album_id));
             entry.container.child_count = entry.album_ids.len();
         }
+    }
 
-        let album_facts: HashMap<ObjectId, AlbumFacts> = resolved
+    /// Each album's resolved artist, flattened back onto its own facts.
+    /// `album_container` (below) is the one place that reads this to
+    /// build a `Container` with the right display title and `parent_id`.
+    fn build_album_facts_map(
+        resolved: &HashMap<ObjectId, Resolved>,
+    ) -> HashMap<ObjectId, AlbumFacts> {
+        resolved
             .iter()
             .map(|(album_id, r)| {
                 let artist_id = match &r.artist_key {
@@ -222,14 +265,7 @@ impl MusicLibraryView {
                     },
                 )
             })
-            .collect();
-
-        Snapshot {
-            items,
-            album_ids,
-            album_facts,
-            artists,
-        }
+            .collect()
     }
 
     /// Every item in the tree, found by walking every container from the
@@ -397,6 +433,16 @@ impl MusicLibraryView {
             .map(|(container, _)| Entry::Container(container))
             .collect()
     }
+}
+
+/// One album's intermediate resolution, computed by `resolve_album_facts`
+/// and consumed by `group_albums_by_artist_key`/`build_artist_containers`/
+/// `build_album_facts_map` - `snapshot()`'s own working state, not part
+/// of its final `Snapshot` output.
+struct Resolved {
+    display_title: String,
+    artist_key: Option<ArtistKey>,
+    artist_raw_name: Option<String>,
 }
 
 /// One album's tag-resolved facts: its display title (tag-preferred,

@@ -15,7 +15,7 @@
 
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Metadata {
     pub title: String,
     pub track_number: Option<u32>,

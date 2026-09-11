@@ -23,21 +23,7 @@ pub fn document(service: ServiceType) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quick_xml::Reader;
-    use quick_xml::events::Event;
-
-    fn assert_well_formed(xml: &str) {
-        let mut reader = Reader::from_str(xml);
-        let mut buf = Vec::new();
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Eof) => break,
-                Ok(_) => {}
-                Err(err) => panic!("malformed XML at {}: {err}", reader.buffer_position()),
-            }
-            buf.clear();
-        }
-    }
+    use crate::core::test_support::assert_well_formed;
 
     #[test]
     fn every_service_scpd_is_well_formed() {

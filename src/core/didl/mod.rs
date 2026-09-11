@@ -144,24 +144,10 @@ fn art_url(base_url: &str, id: &ObjectId) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::test_support::assert_well_formed;
     use crate::index::IndexBuilder;
-    use quick_xml::Reader;
-    use quick_xml::events::Event;
     use std::path::PathBuf;
     use std::time::SystemTime;
-
-    fn assert_well_formed(xml: &str) {
-        let mut reader = Reader::from_str(xml);
-        let mut buf = Vec::new();
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Eof) => break,
-                Ok(_) => {}
-                Err(err) => panic!("malformed XML at {}: {err}", reader.buffer_position()),
-            }
-            buf.clear();
-        }
-    }
 
     #[test]
     fn renders_a_well_formed_empty_didl_lite_document() {

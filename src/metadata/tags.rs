@@ -83,24 +83,20 @@ impl MetadataProvider for TagMetadata {
         let tag = tagged_file.as_ref().and_then(primary_tag);
         let has_embedded_art = tag.as_ref().is_some_and(|t| !t.pictures().is_empty());
         let has_art = has_embedded_art || find_cover_file(path, &self.media_roots).is_some();
-        let Some(tag) = tag else {
-            return Metadata {
-                artist: None,
-                album: None,
-                genre: None,
-                has_art,
-                duration_millis,
-                bitrate,
-                sample_rate,
-                bits_per_sample,
-                channels,
-                ..filename
-            };
-        };
+
         Metadata {
-            artist: tag.artist().map(|s| s.into_owned()),
-            album: tag.album().map(|s| s.into_owned()),
-            genre: tag.genre().map(|s| s.into_owned()),
+            artist: tag
+                .as_ref()
+                .and_then(Accessor::artist)
+                .map(|s| s.into_owned()),
+            album: tag
+                .as_ref()
+                .and_then(Accessor::album)
+                .map(|s| s.into_owned()),
+            genre: tag
+                .as_ref()
+                .and_then(Accessor::genre)
+                .map(|s| s.into_owned()),
             has_art,
             duration_millis,
             bitrate,

@@ -18,3 +18,5 @@ pub(crate) mod metadata_provider;
 pub mod net;
 pub(crate) mod soap;
 pub mod ssdp;
+#[cfg(test)]
+pub(crate) mod test_support;
