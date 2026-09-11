@@ -20,5 +20,17 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-# A longer (30-60 minute) fuzz run per target belongs here too, once fuzz
-# targets exist (see docs/PLAN.md Phase 9).
+  fuzz-long:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [ssdp_parse, soap_parse, range_parse, path_resolve]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
+      - run: cargo install cargo-fuzz --locked
+      - run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=1800

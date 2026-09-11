@@ -1,0 +1,84 @@
+name: Release
+
+# The `release` job (below) only runs on an actual tag push - pushing a
+# real v* tag is what publishes a GitHub Release, and that's the
+# user's own call, never automatic. workflow_dispatch exists so the
+# whole build+geiger+size-check pipeline can be exercised for real
+# from the Actions tab first, with no release created, since this
+# project's sandbox has no Docker to dry-run `cross` locally.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_SIZE_BUDGET_BYTES: 15728640 # 15 MiB
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      # Plain `rustup target add` + `cargo build` isn't enough for
+      # aarch64-unknown-linux-musl: there's no official Ubuntu apt
+      # package providing a working aarch64-linux-musl-gcc
+      # cross-toolchain, even for a project with zero C dependencies.
+      # `cross` (cross-rs/cross) is what real Rust CLI release
+      # workflows (ripgrep, zoxide) actually use for this target.
+      - name: install cross
+        run: cargo install cross --locked
+      - run: cross build --release --target ${{ matrix.target }}
+      - name: check binary size budget
+        run: |
+          size=$(stat -c%s "target/${{ matrix.target }}/release/dlna-rs")
+          echo "binary size: $size bytes (budget: $BINARY_SIZE_BUDGET_BYTES)"
+          test "$size" -le "$BINARY_SIZE_BUDGET_BYTES"
+      - name: stage renamed binary
+        run: |
+          mkdir dist
+          cp "target/${{ matrix.target }}/release/dlna-rs" "dist/dlna-rs-${{ matrix.target }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dlna-rs-${{ matrix.target }}
+          path: dist/dlna-rs-${{ matrix.target }}
+
+  geiger:
+    name: cargo geiger report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # One report for the whole dependency tree, not per target -
+      # geiger counts unsafe code in the source, which doesn't depend
+      # on which architecture it's eventually compiled for. No
+      # dedicated file-output flag, so this redirects stdout.
+      - run: cargo install cargo-geiger --locked
+      - run: cargo geiger --output-format GitHubMarkdown > geiger-report.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: geiger-report
+          path: geiger-report.md
+
+  release:
+    name: create release
+    needs: [build, geiger]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: artifacts/*

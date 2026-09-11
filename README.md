@@ -12,11 +12,10 @@ be Plex or Jellyfin.
 
 ## Status
 
-Phases 0 through 9, and 11 through 16, are done. A real DLNA client found this
-server over SSDP, browsed its library, and played back FLAC and MP3
-with working seek. What is left is Phase 10, wiring up CI. See
-[`docs/PLAN.md`](docs/PLAN.md) for the phased plan this repo tracks
-instead of GitHub issues.
+All phases through 16 are done. A real DLNA client found this server
+over SSDP, browsed its library, and played back FLAC and MP3 with
+working seek. See [`docs/PLAN.md`](docs/PLAN.md) for the phased plan
+this repo tracks instead of GitHub issues.
 
 ## What it does
 

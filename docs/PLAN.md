@@ -688,16 +688,52 @@ the evidence above.
 **Goal:** the CI from Phase 0 grows into the full pipeline, and releases are
 automated.
 
-- [ ] PR/push CI: build, test, clippy, fmt, `cargo audit`, `cargo deny`,
-      60–120s fuzz smoke on all four targets.
-- [ ] Scheduled weekly job: `cargo audit` re-run, longer fuzz run.
-- [ ] Release workflow: cross-compiled `x86_64-unknown-linux-musl` and
+- [x] PR/push CI: build, test, clippy, fmt, `cargo audit`, `cargo deny`,
+      60–120s fuzz smoke on all four targets. **`.github/workflows/ci.yml`**,
+      already in place from earlier phases — this checklist item was
+      done in practice before this phase, just never marked. The
+      `msrv` job's toolchain pin needed a real fix this phase too:
+      Phase 15 bumped `rust-version` to 1.90 for real `redb` 4.2.0, but
+      the workflow still pinned 1.85, so every push failed outright.
+      Fixed and verified against the real 1.90.0 toolchain, installed
+      via `rustup` and run locally, not just assumed from a newer
+      local default.
+- [x] Scheduled weekly job: `cargo audit` re-run, longer fuzz run. The
+      audit re-run already existed (`.github/workflows/scheduled.yml`);
+      added the long fuzz run this phase — a 30-minute-per-target
+      `cargo fuzz run` across all four real targets, replacing the
+      file's own stale comment ("once fuzz targets exist") from before
+      Phase 9 added them.
+- [x] Release workflow: cross-compiled `x86_64-unknown-linux-musl` and
       `aarch64-unknown-linux-musl` static binaries, `cargo-geiger` report
       attached, binary size check against a 15MB budget.
-- [ ] Dependabot config for `Cargo.toml`/`Cargo.lock`.
+      **`.github/workflows/release.yml`**, new this phase. Verified
+      against real, current release workflows (ripgrep, zoxide) before
+      writing anything: both cross-compile `aarch64-unknown-linux-musl`
+      with `cross` (cross-rs/cross), not plain `rustup target add` +
+      `cargo build` — there's no official Ubuntu apt package providing
+      a working `aarch64-linux-musl-gcc` cross-toolchain, even for a
+      project with zero C dependencies like this one. Every workflow
+      file passed `actionlint` (a real static checker, not just YAML
+      parsing) with zero findings. The release-creation step only runs
+      on an actual tag push (`if: startsWith(github.ref, 'refs/tags/')`);
+      `workflow_dispatch` exercises the whole build+geiger+size-check
+      pipeline for real without creating a GitHub Release, since this
+      project's own dev sandbox has no Docker to dry-run `cross` locally.
+- [x] Dependabot config for `Cargo.toml`/`Cargo.lock`.
+      **`.github/dependabot.yml`**, new this phase — covers the root
+      crate, the separate `fuzz/` crate (its own `Cargo.toml`/lock),
+      and the GitHub Actions themselves (the `@v3`/`@v4` pins this same
+      phase just chose), so the actions don't quietly go stale right
+      next to the dependency-freshness problem this item exists to fix.
 
 **Exit criterion:** a tagged release produces both static binaries and an
-attached geiger report with no manual steps.
+attached geiger report with no manual steps. The pipeline itself is
+built and verified (YAML validated, `actionlint`-clean, MSRV job fixed
+and confirmed against a real 1.90.0 toolchain) — actually cutting a
+real tag is a real, visible, hard-to-reverse action, so it's the
+user's own call, not something done proactively as part of writing the
+workflow.
 
 ---
 
