@@ -110,18 +110,32 @@ impl MetadataProvider for TagMetadata {
 
 impl ArtSource for TagMetadata {
     fn art<'a>(&'a self, path: &'a Path) -> Pin<Box<dyn Future<Output = Option<Art>> + Send + 'a>> {
+        // `find_art` below is a real disk read plus a `lofty` parse -
+        // the same class of blocking work `scanner`/`rescan` already
+        // keep off the async runtime via `spawn_blocking`. This is on
+        // the per-request HTTP path, not scan time, so blocking here
+        // would stall whatever else that Tokio worker thread is doing
+        // for the duration of the read.
+        let path = path.to_path_buf();
+        let media_roots = self.media_roots.clone();
         Box::pin(async move {
-            if let Some(art) = embedded_picture(path) {
-                return Some(art);
-            }
-            let cover_path = find_cover_file(path, &self.media_roots)?;
-            let bytes = std::fs::read(&cover_path).ok()?;
-            Some(Art {
-                bytes: Bytes::from(bytes),
-                mime: mime_for_cover_file(&cover_path),
-            })
+            tokio::task::spawn_blocking(move || find_art(&path, &media_roots))
+                .await
+                .ok()?
         })
     }
+}
+
+fn find_art(path: &Path, media_roots: &[PathBuf]) -> Option<Art> {
+    if let Some(art) = embedded_picture(path) {
+        return Some(art);
+    }
+    let cover_path = find_cover_file(path, media_roots)?;
+    let bytes = std::fs::read(&cover_path).ok()?;
+    Some(Art {
+        bytes: Bytes::from(bytes),
+        mime: mime_for_cover_file(&cover_path),
+    })
 }
 
 /// The embedded picture from `path`'s own tag, preferred over an

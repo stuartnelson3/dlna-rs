@@ -148,7 +148,12 @@ fn paginate(mut children: Vec<Entry>, action: &soap::SoapAction) -> Vec<Entry> {
     if starting_index >= children.len() {
         return Vec::new();
     }
-    children = children.split_off(starting_index);
+    // `StartingIndex=0` is the overwhelmingly common case (most clients
+    // Browse a folder once, from the start) - skip `split_off`'s copy
+    // of the whole Vec when there's nothing to skip.
+    if starting_index > 0 {
+        children = children.split_off(starting_index);
+    }
     if requested_count > 0 && requested_count < children.len() {
         children.truncate(requested_count);
     }

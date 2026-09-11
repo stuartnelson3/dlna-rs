@@ -59,19 +59,25 @@ impl MusicLibraryView {
     /// real parent the index recorded. `entry()` below must match: an ID
     /// that names a top-level entry has to report the same parent.
     fn top_level(&self) -> Vec<Entry> {
-        let snapshot = self.snapshot();
+        self.top_level_within(&self.snapshot())
+    }
+
+    /// Same listing as `top_level()`, against a snapshot the caller
+    /// already has - so a caller that also needs the snapshot for
+    /// something else (`entry()`, below) never pays for a second one.
+    fn top_level_within(&self, snapshot: &Snapshot) -> Vec<Entry> {
         let entries = match &self.mode {
-            Mode::AllSongs => Self::all_songs(&snapshot),
-            Mode::Albums => self.albums(&snapshot),
-            Mode::Artists => self.artists(&snapshot),
+            Mode::AllSongs => Self::all_songs(snapshot),
+            Mode::Albums => self.albums(snapshot),
+            Mode::Artists => self.artists(snapshot),
             Mode::RecentlyAddedSongs {
                 count,
                 max_age_days,
-            } => Self::recently_added_songs(&snapshot, *count, *max_age_days),
+            } => Self::recently_added_songs(snapshot, *count, *max_age_days),
             Mode::RecentlyAddedAlbums {
                 count,
                 max_age_days,
-            } => self.recently_added_albums(&snapshot, *count, *max_age_days),
+            } => self.recently_added_albums(snapshot, *count, *max_age_days),
         };
         entries.into_iter().map(reparent_to_root).collect()
     }
@@ -510,12 +516,23 @@ impl ContentSource for MusicLibraryView {
                 child_count: self.top_level().len(),
             }));
         }
+        // Computed once and shared below - `entry()` sits on the same
+        // per-request path as streaming and art (`core::http` resolves
+        // every track/art request through here), so unlike `children()`
+        // it can be called far more often than once per Browse. Taking
+        // two snapshots here would silently double that cost on every
+        // such request.
+        let snapshot = self.snapshot();
         // A top-level entry (an album, an artist, a recently-added song)
         // must report the same reparented `parent_id` here that
         // `children(&root)` already gave out for it - so check there
         // first, and only fall back to the index's real entry once we
         // know `id` names something deeper than the top level.
-        if let Some(entry) = self.top_level().into_iter().find(|entry| entry.id() == id) {
+        if let Some(entry) = self
+            .top_level_within(&snapshot)
+            .into_iter()
+            .find(|entry| entry.id() == id)
+        {
             return Some(entry);
         }
         // A second-level album (one browsed into by way of an artist,
@@ -528,17 +545,15 @@ impl ContentSource for MusicLibraryView {
         if matches!(
             self.mode,
             Mode::Albums | Mode::Artists | Mode::RecentlyAddedAlbums { .. }
-        ) {
-            let snapshot = self.snapshot();
-            if snapshot.album_ids.contains(id) {
-                let mut container = self.album_container(&snapshot, id)?;
-                if matches!(self.mode, Mode::Artists)
-                    && let Some(facts) = snapshot.album_facts.get(id)
-                {
-                    container.parent_id = Some(facts.artist_id.clone());
-                }
-                return Some(Entry::Container(container));
+        ) && snapshot.album_ids.contains(id)
+        {
+            let mut container = self.album_container(&snapshot, id)?;
+            if matches!(self.mode, Mode::Artists)
+                && let Some(facts) = snapshot.album_facts.get(id)
+            {
+                container.parent_id = Some(facts.artist_id.clone());
             }
+            return Some(Entry::Container(container));
         }
         self.index.entry(id)
     }
