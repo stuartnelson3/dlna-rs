@@ -9,10 +9,10 @@ use std::io;
 use std::path::Path;
 use std::pin::Pin;
 
-use bytes::Bytes;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
+use tokio_util::io::ReaderStream;
 
-use crate::core::byte_source::{ByteRange, ByteSource};
+use crate::core::byte_source::{ByteRange, ByteSource, ByteStream};
 
 pub struct PassthroughSource;
 
@@ -25,23 +25,17 @@ impl ByteSource for PassthroughSource {
         &'a self,
         path: &'a Path,
         range: Option<ByteRange>,
-    ) -> Pin<Box<dyn Future<Output = io::Result<Bytes>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = io::Result<ByteStream>> + Send + 'a>> {
         Box::pin(async move {
             let mut file = tokio::fs::File::open(path).await?;
-            match range {
-                None => {
-                    let mut buf = Vec::new();
-                    file.read_to_end(&mut buf).await?;
-                    Ok(Bytes::from(buf))
-                }
+            let stream: ByteStream = match range {
+                None => Box::pin(ReaderStream::new(file)),
                 Some(range) => {
                     file.seek(io::SeekFrom::Start(range.start)).await?;
-                    let len = usize::try_from(range.len()).unwrap_or(usize::MAX);
-                    let mut buf = vec![0u8; len];
-                    file.read_exact(&mut buf).await?;
-                    Ok(Bytes::from(buf))
+                    Box::pin(ReaderStream::new(file.take(range.len())))
                 }
-            }
+            };
+            Ok(stream)
         })
     }
 }
@@ -50,14 +44,27 @@ impl ByteSource for PassthroughSource {
 mod tests {
     use super::*;
 
+    /// Drains a `ByteStream` into one buffer, for tests that only care
+    /// about the final bytes, not the chunking - production code (see
+    /// `core::http`) is the one place that cares about laziness.
+    async fn collect(mut stream: ByteStream) -> Vec<u8> {
+        let mut buf = Vec::new();
+        loop {
+            match std::future::poll_fn(|cx| Pin::as_mut(&mut stream).poll_next(cx)).await {
+                Some(chunk) => buf.extend_from_slice(&chunk.unwrap()),
+                None => return buf,
+            }
+        }
+    }
+
     #[tokio::test]
     async fn reads_the_whole_file_with_no_range() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("track.bin");
         std::fs::write(&path, b"0123456789").unwrap();
 
-        let bytes = PassthroughSource.read(&path, None).await.unwrap();
-        assert_eq!(&bytes[..], b"0123456789");
+        let stream = PassthroughSource.read(&path, None).await.unwrap();
+        assert_eq!(collect(stream).await, b"0123456789");
     }
 
     #[tokio::test]
@@ -66,11 +73,11 @@ mod tests {
         let path = dir.path().join("track.bin");
         std::fs::write(&path, b"0123456789").unwrap();
 
-        let bytes = PassthroughSource
+        let stream = PassthroughSource
             .read(&path, Some(ByteRange { start: 2, end: 5 }))
             .await
             .unwrap();
-        assert_eq!(&bytes[..], b"2345");
+        assert_eq!(collect(stream).await, b"2345");
     }
 
     #[tokio::test]

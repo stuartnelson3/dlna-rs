@@ -13,13 +13,18 @@ pub(crate) mod router;
 pub(crate) mod scpd;
 
 use std::convert::Infallible;
+use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
-use hyper::body::Incoming;
+use futures_core::Stream;
+use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt, Full, StreamBody};
+use hyper::body::{Frame, Incoming};
 use hyper::header::{CONTENT_LENGTH, RANGE};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -31,12 +36,50 @@ use uuid::Uuid;
 use self::description::DeviceInfo;
 use self::router::Route;
 use crate::core::art_source::ArtSource;
-use crate::core::byte_source::ByteSource;
+use crate::core::byte_source::{ByteSource, ByteStream};
 use crate::core::content_source::ContentSource;
 use crate::core::device::ServiceType;
 use crate::core::didl::format;
 use crate::core::{dispatch, soap};
 use crate::index::{Entry, ObjectId};
+
+/// Every response this server sends, whether a small XML/SOAP body
+/// built in memory or a media file streamed lazily off disk (see
+/// `item_response`/`streamed_body`) - one concrete type so `handle`'s
+/// match arms and every helper below can share a single return type.
+type RespBody = BoxBody<Bytes, io::Error>;
+
+/// Wraps an already-in-memory body - every response except the item
+/// byte-stream itself. `Full`'s error type is the uninhabited
+/// `Infallible`, so there's really no error to convert, just a type
+/// to satisfy `RespBody`'s shared `io::Error`.
+fn full_body(bytes: Bytes) -> RespBody {
+    Full::new(bytes).map_err(|never| match never {}).boxed()
+}
+
+/// Wraps a `ByteSource::read` stream as a response body - chunks reach
+/// the client as they're read off disk, instead of waiting for the
+/// whole file/range to sit in memory first.
+fn streamed_body(stream: ByteStream) -> RespBody {
+    StreamBody::new(FrameStream(stream)).boxed()
+}
+
+/// Adapts a `ByteSource`'s plain `Bytes` chunks to the `Frame`s a
+/// hyper body must yield - the only place this file's streaming needs
+/// to know about hyper's body-framing at all.
+struct FrameStream(ByteStream);
+
+impl Stream for FrameStream {
+    type Item = io::Result<Frame<Bytes>>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.get_mut()
+            .0
+            .as_mut()
+            .poll_next(cx)
+            .map(|next| next.map(|chunk| chunk.map(Frame::data)))
+    }
+}
 
 pub struct HttpServer {
     listener: TcpListener,
@@ -139,7 +182,7 @@ impl HttpServer {
         }
     }
 
-    async fn handle(&self, req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
+    async fn handle(&self, req: Request<Incoming>) -> Result<Response<RespBody>, Infallible> {
         let route = router::route(req.method(), req.uri().path());
         Ok(match route {
             Route::DeviceDescription => xml_response(description::build(&DeviceInfo {
@@ -160,7 +203,7 @@ impl HttpServer {
         &self,
         service: ServiceType,
         req: Request<Incoming>,
-    ) -> Response<Full<Bytes>> {
+    ) -> Response<RespBody> {
         let Some(len) = content_length(&req) else {
             return bad_request();
         };
@@ -190,7 +233,7 @@ impl HttpServer {
         id: &ObjectId,
         method: &Method,
         headers: &HeaderMap,
-    ) -> Response<Full<Bytes>> {
+    ) -> Response<RespBody> {
         let Some(resolved) = self.resolve_item_path(id, "serve").await else {
             return not_found();
         };
@@ -215,15 +258,15 @@ impl HttpServer {
             _ => Outcome::Full,
         };
 
-        let bytes = match self.byte_source.read(&resolved, outcome.range()).await {
-            Ok(bytes) => bytes,
+        let stream = match self.byte_source.read(&resolved, outcome.range()).await {
+            Ok(stream) => stream,
             Err(err) => {
                 log::warn!("failed to read {}: {err}", resolved.display());
                 return not_found();
             }
         };
 
-        let response = item_response(&outcome, &resolved, file_size, bytes);
+        let response = item_response(&outcome, &resolved, file_size, stream);
         if *method == Method::HEAD {
             without_body(response)
         } else {
@@ -235,7 +278,7 @@ impl HttpServer {
     /// art is small, a single whole-body response is enough, and the
     /// simpler handler is the deliberate trade for that (see
     /// `core::art_source`'s doc comment).
-    async fn handle_art(&self, id: &ObjectId) -> Response<Full<Bytes>> {
+    async fn handle_art(&self, id: &ObjectId) -> Response<RespBody> {
         let Some(resolved) = self.resolve_item_path(id, "serve its art").await else {
             return not_found();
         };
@@ -248,7 +291,7 @@ impl HttpServer {
             .status(StatusCode::OK)
             .header("Content-Type", art.mime)
             .header("Content-Length", art.bytes.len().to_string())
-            .body(Full::new(art.bytes))
+            .body(full_body(art.bytes))
             .expect("a real MIME string and byte length are always valid header values")
     }
 
@@ -313,8 +356,8 @@ fn item_response(
     outcome: &Outcome,
     path: &Path,
     file_size: u64,
-    bytes: Bytes,
-) -> Response<Full<Bytes>> {
+    stream: ByteStream,
+) -> Response<RespBody> {
     let mut builder = Response::builder()
         .header("Content-Type", format::mime_for(path))
         .header("Accept-Ranges", "bytes")
@@ -338,20 +381,23 @@ fn item_response(
     };
 
     builder
-        .body(Full::new(bytes))
+        .body(streamed_body(stream))
         .expect("header values built from our own format/range types are always valid")
 }
 
-fn without_body(response: Response<Full<Bytes>>) -> Response<Full<Bytes>> {
+/// Drops the body without ever polling it - for a HEAD request, `stream`
+/// is dropped unread here, so a HEAD never actually reads the file off
+/// disk just to discard the bytes.
+fn without_body(response: Response<RespBody>) -> Response<RespBody> {
     let (parts, _) = response.into_parts();
-    Response::from_parts(parts, Full::new(Bytes::new()))
+    Response::from_parts(parts, full_body(Bytes::new()))
 }
 
-fn range_not_satisfiable(file_size: u64) -> Response<Full<Bytes>> {
+fn range_not_satisfiable(file_size: u64) -> Response<RespBody> {
     Response::builder()
         .status(StatusCode::RANGE_NOT_SATISFIABLE)
         .header("Content-Range", format!("bytes */{file_size}"))
-        .body(Full::new(Bytes::new()))
+        .body(full_body(Bytes::new()))
         .expect("static header name/value are always valid")
 }
 
@@ -364,45 +410,45 @@ fn content_length(req: &Request<Incoming>) -> Option<usize> {
         .ok()
 }
 
-fn xml_response(body: String) -> Response<Full<Bytes>> {
+fn xml_response(body: String) -> Response<RespBody> {
     response(StatusCode::OK, body)
 }
 
-fn soap_ok_response(body: String) -> Response<Full<Bytes>> {
+fn soap_ok_response(body: String) -> Response<RespBody> {
     response(StatusCode::OK, body)
 }
 
 // UPnP convention: a SOAP fault is carried in the body of an HTTP 500
 // response, not a 200 - the body's <s:Fault> element is what actually
 // describes the error.
-fn soap_fault_response(body: String) -> Response<Full<Bytes>> {
+fn soap_fault_response(body: String) -> Response<RespBody> {
     response(StatusCode::INTERNAL_SERVER_ERROR, body)
 }
 
-fn response(status: StatusCode, body: String) -> Response<Full<Bytes>> {
+fn response(status: StatusCode, body: String) -> Response<RespBody> {
     Response::builder()
         .status(status)
         .header("Content-Type", "text/xml; charset=\"utf-8\"")
-        .body(Full::new(Bytes::from(body)))
+        .body(full_body(Bytes::from(body)))
         .expect("static header name/value are always valid")
 }
 
-fn not_found() -> Response<Full<Bytes>> {
+fn not_found() -> Response<RespBody> {
     empty_response(StatusCode::NOT_FOUND)
 }
 
-fn bad_request() -> Response<Full<Bytes>> {
+fn bad_request() -> Response<RespBody> {
     empty_response(StatusCode::BAD_REQUEST)
 }
 
-fn payload_too_large() -> Response<Full<Bytes>> {
+fn payload_too_large() -> Response<RespBody> {
     empty_response(StatusCode::PAYLOAD_TOO_LARGE)
 }
 
-fn empty_response(status: StatusCode) -> Response<Full<Bytes>> {
+fn empty_response(status: StatusCode) -> Response<RespBody> {
     Response::builder()
         .status(status)
-        .body(Full::new(Bytes::new()))
+        .body(full_body(Bytes::new()))
         .expect("static header name/value are always valid")
 }
 

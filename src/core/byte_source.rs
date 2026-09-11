@@ -16,6 +16,13 @@ use std::path::Path;
 use std::pin::Pin;
 
 use bytes::Bytes;
+use futures_core::Stream;
+
+/// A lazily-produced sequence of chunks making up a `read()` call's
+/// bytes - never the whole body materialized up front. A large file
+/// served whole, or a large open-ended range, would otherwise sit
+/// fully in memory before the first byte reaches the client.
+pub type ByteStream = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send + Sync>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ByteRange {
@@ -41,10 +48,12 @@ pub trait ByteSource: Send + Sync {
     /// see docs/THREAT_MODEL.md and the spec's design note on this flag.
     fn supports_range(&self) -> bool;
 
-    /// Reads the whole file (`range: None`) or just the given byte range.
+    /// Reads the whole file (`range: None`) or just the given byte range,
+    /// as a stream of chunks rather than one buffer - so a caller can
+    /// start sending bytes before the whole body is read off disk.
     fn read<'a>(
         &'a self,
         path: &'a Path,
         range: Option<ByteRange>,
-    ) -> Pin<Box<dyn Future<Output = io::Result<Bytes>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = io::Result<ByteStream>> + Send + 'a>>;
 }

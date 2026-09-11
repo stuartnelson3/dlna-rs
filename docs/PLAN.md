@@ -324,13 +324,16 @@ exactly as designed, including the 500-with-SOAP-fault response).
       (`transform::passthrough`). Hand-rolled `Pin<Box<dyn Future>>`
       instead of the `async-trait` crate — boxing by hand at one call
       site is a few extra lines, not worth a dependency whose only job
-      is that syntax. Reads are buffered into memory (`Bytes`), not
-      streamed — deliberate MVP simplification: this project's target
-      files are music tracks (a few MB), not video, and low resource
-      footprint is explicitly "a natural consequence of narrow scope,
-      not a thing to specifically optimize for" (spec goal 3). True
-      streaming is one function to swap later if it ever matters.
-      `supports_range()` is checked before honoring any `Range` header —
+      is that syntax. `read()` returns a lazy `ByteStream` (chunked via
+      `tokio_util::io::ReaderStream`), not a fully materialized
+      `Bytes` buffer — found via a static performance analysis that a
+      full-file GET or open-ended range would otherwise sit entirely
+      in memory before the first byte reached the client; real cost
+      for a large lossless file on slow storage. `core::http`
+      converts the stream to hyper `Frame`s itself (`FrameStream`), so
+      `core::byte_source` never needs to know about hyper's own
+      body-framing. `supports_range()` is checked before honoring any
+      `Range` header —
       false would mean serving the whole body with `200 OK` regardless,
       per the spec's design note (not exercised yet: `PassthroughSource`
       always returns `true`).
