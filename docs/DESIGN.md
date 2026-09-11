@@ -339,6 +339,14 @@ gained one new method, `retain_only` (default no-op), so `rescan_once`
 can tell a stateful provider which paths are still real after a scan,
 without `FilenameMetadata`/`TagMetadata` needing to care.
 
+Phase 16 sends real audio properties on `<res>` -
+duration/bitrate/sample rate/bit depth/channel count - reusing the
+same `lofty` read `metadata::tags` already did for artist/album/genre,
+not a new one. The one real unit-conversion decision (`lofty` reports
+bitrate in kbps, the DLNA spec's `res@bitrate` wants bytes/sec) happens
+once, in `metadata::tags`, so nothing past that point - `Item`,
+`TrackTags`, the cache, `core::didl` - ever sees `lofty`'s own unit.
+
 See [`PLAN.md`](PLAN.md) for what's next and why the phases are ordered the
 way they are.
 

@@ -85,6 +85,11 @@ pub struct Item {
     pub album: Option<String>,
     pub genre: Option<String>,
     pub has_art: bool,
+    pub duration_millis: Option<u64>,
+    pub bitrate: Option<u32>,
+    pub sample_rate: Option<u32>,
+    pub bits_per_sample: Option<u8>,
+    pub channels: Option<u8>,
 }
 
 /// The tag-derived facts an item carries, read once at scan time by a
@@ -98,6 +103,11 @@ pub struct TrackTags {
     pub album: Option<String>,
     pub genre: Option<String>,
     pub has_art: bool,
+    pub duration_millis: Option<u64>,
+    pub bitrate: Option<u32>,
+    pub sample_rate: Option<u32>,
+    pub bits_per_sample: Option<u8>,
+    pub channels: Option<u8>,
 }
 
 #[derive(Debug)]
@@ -173,6 +183,11 @@ impl Index {
                 album: tags.album.clone(),
                 genre: tags.genre.clone(),
                 has_art: tags.has_art,
+                duration_millis: tags.duration_millis,
+                bitrate: tags.bitrate,
+                sample_rate: tags.sample_rate,
+                bits_per_sample: tags.bits_per_sample,
+                channels: tags.channels,
             }),
         })
     }

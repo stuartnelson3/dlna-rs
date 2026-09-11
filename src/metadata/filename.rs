@@ -23,6 +23,11 @@ impl MetadataProvider for FilenameMetadata {
             album: None,
             genre: None,
             has_art: false,
+            duration_millis: None,
+            bitrate: None,
+            sample_rate: None,
+            bits_per_sample: None,
+            channels: None,
         }
     }
 }

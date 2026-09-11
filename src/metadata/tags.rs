@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use bytes::Bytes;
-use lofty::file::TaggedFileExt;
+use lofty::file::{AudioFile, TaggedFile, TaggedFileExt};
 use lofty::picture::{MimeType, PictureType};
 use lofty::tag::{Accessor, Tag};
 
@@ -51,7 +51,36 @@ impl MetadataProvider for TagMetadata {
         // and that logic is already tested; this method only adds to
         // it, never replaces it.
         let filename = FilenameMetadata.metadata(path);
-        let tag = read_tag(path);
+        let tagged_file = open_tagged_file(path);
+
+        // Real audio properties don't depend on a tag existing at all -
+        // computed from the same opened file regardless of which branch
+        // below runs.
+        let duration_millis = tagged_file
+            .as_ref()
+            .map(|f| f.properties().duration())
+            .filter(|d| !d.is_zero())
+            .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+        let (bitrate, sample_rate, bits_per_sample, channels) = tagged_file
+            .as_ref()
+            .map(|f| {
+                let p = f.properties();
+                (
+                    // overall_bitrate, not audio_bitrate: the DLNA spec
+                    // describes this as the bitrate of the whole
+                    // resource, not just its audio payload. lofty
+                    // reports kbps; the DLNA res@bitrate convention is
+                    // bytes/sec - converted here, once, so nothing
+                    // downstream ever sees lofty's unit.
+                    p.overall_bitrate().map(|kbps| kbps * 1000 / 8),
+                    p.sample_rate(),
+                    p.bit_depth(),
+                    p.channels(),
+                )
+            })
+            .unwrap_or_default();
+
+        let tag = tagged_file.as_ref().and_then(primary_tag);
         let has_embedded_art = tag.as_ref().is_some_and(|t| !t.pictures().is_empty());
         let has_art = has_embedded_art || find_cover_file(path, &self.media_roots).is_some();
         let Some(tag) = tag else {
@@ -60,6 +89,11 @@ impl MetadataProvider for TagMetadata {
                 album: None,
                 genre: None,
                 has_art,
+                duration_millis,
+                bitrate,
+                sample_rate,
+                bits_per_sample,
+                channels,
                 ..filename
             };
         };
@@ -68,6 +102,11 @@ impl MetadataProvider for TagMetadata {
             album: tag.album().map(|s| s.into_owned()),
             genre: tag.genre().map(|s| s.into_owned()),
             has_art,
+            duration_millis,
+            bitrate,
+            sample_rate,
+            bits_per_sample,
+            channels,
             ..filename
         }
     }
@@ -93,7 +132,8 @@ impl ArtSource for TagMetadata {
 /// external cover file when both exist - an embedded picture was
 /// deliberately attached to this exact track, so it wins.
 fn embedded_picture(path: &Path) -> Option<Art> {
-    let tag = read_tag(path)?;
+    let tagged_file = open_tagged_file(path)?;
+    let tag = primary_tag(&tagged_file)?;
     let picture = tag
         .get_picture_type(PictureType::CoverFront)
         .or_else(|| tag.pictures().first())?
@@ -104,20 +144,27 @@ fn embedded_picture(path: &Path) -> Option<Art> {
     })
 }
 
-/// Reads `path`'s tag, or `None` if the file has no tag, isn't a format
-/// `lofty` understands (it has no WMA support, for one — see
-/// docs/PLAN.md), or is malformed. Never panics: every `lofty` call in
-/// this chain returns a `Result`, and every error is logged and
-/// swallowed here, not propagated — one bad file's tags must never
-/// abort a whole scan.
-fn read_tag(path: &Path) -> Option<Tag> {
-    let tagged_file = match lofty::read_from_path(path) {
-        Ok(file) => file,
+/// Opens `path` with `lofty`, or `None` if the file has no recognizable
+/// structure, isn't a format `lofty` understands (it has no WMA
+/// support, for one — see docs/PLAN.md), or is malformed. Never
+/// panics: every `lofty` call in this chain returns a `Result`, and
+/// every error is logged and swallowed here, not propagated — one bad
+/// file must never abort a whole scan. Kept separate from tag
+/// extraction so a caller can also reach `.properties()` (real audio
+/// duration/bitrate/etc.) from the same opened file, not just its tag.
+fn open_tagged_file(path: &Path) -> Option<TaggedFile> {
+    match lofty::read_from_path(path) {
+        Ok(file) => Some(file),
         Err(err) => {
             log::warn!("couldn't read tags from {}: {err}", path.display());
-            return None;
+            None
         }
-    };
+    }
+}
+
+/// The tag `open_tagged_file` did or didn't find, preferring the
+/// primary tag but falling back to the first one present.
+fn primary_tag(tagged_file: &TaggedFile) -> Option<Tag> {
     tagged_file
         .primary_tag()
         .or_else(|| tagged_file.first_tag())
@@ -230,8 +277,63 @@ mod tests {
         let metadata = tags_for(&dir).metadata(&path);
         assert_eq!(metadata.artist, None);
         assert!(!metadata.has_art);
+        assert_eq!(metadata.duration_millis, None);
+        assert_eq!(metadata.bitrate, None);
+        assert_eq!(metadata.sample_rate, None);
+        assert_eq!(metadata.bits_per_sample, None);
+        assert_eq!(metadata.channels, None);
 
         assert!(tokio_test_block_on(tags_for(&dir).art(&path)).is_none());
+    }
+
+    #[test]
+    fn reads_real_audio_properties_from_the_file_itself() {
+        // Properties come from the file's real audio framing, not its
+        // tag - a file with no tag at all still reports them.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("untagged.mp3");
+        std::fs::write(&path, minimal_mp3()).unwrap();
+
+        let metadata = tags_for(&dir).metadata(&path);
+        assert_eq!(metadata.sample_rate, Some(44100));
+        assert_eq!(metadata.channels, Some(2));
+        // lofty computes the overall bitrate empirically (real file
+        // size / real duration), not from the nominal 128kbps the
+        // frame header declares, so this checks a reasonable range
+        // around the expected 16000 bytes/sec (128000 bits / 8) rather
+        // than an exact value - close enough confirms the kbps-to-
+        // bytes/sec conversion is real and in the right direction,
+        // without pinning lofty's own internal rounding.
+        let bitrate = metadata
+            .bitrate
+            .expect("a real audio file should report a bitrate");
+        assert!(
+            (14000..18000).contains(&bitrate),
+            "expected roughly 16000 bytes/sec, got {bitrate}"
+        );
+    }
+
+    #[test]
+    fn reads_a_real_duration_in_milliseconds() {
+        // The shared 30-frame fixture's real duration is under one
+        // second (each MPEG-1 Layer III frame covers 1152 samples at
+        // 44.1kHz, about 26ms) - too short to prove duration_millis
+        // is populated at all. This uses enough frames to clear a
+        // full second with margin.
+        let mut frame = vec![0xFFu8, 0xFB, 0x90, 0x00];
+        frame.resize(417, 0);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("longer.mp3");
+        std::fs::write(&path, frame.repeat(100)).unwrap();
+
+        let metadata = tags_for(&dir).metadata(&path);
+        let millis = metadata
+            .duration_millis
+            .expect("a real audio file should report a non-zero duration");
+        assert!(
+            (2000..3200).contains(&millis),
+            "expected roughly 2.6s for 100 frames, got {millis}ms"
+        );
     }
 
     #[test]

@@ -1137,6 +1137,71 @@ it, and confirmed a real XML parser now accepts it end to end.
 
 ---
 
+## Phase 16 — Real audio properties on `<res>`
+
+**Goal:** a track's real duration, bitrate, sample rate, bit depth,
+and channel count appear on the DIDL-Lite `<res>` element, when
+`lofty` could determine them.
+
+Asked directly: "are track bitrates correctly being sent?" They
+weren't — `<res>` only ever carried `protocolInfo` and `size`. Never a
+deliberate scope decision, just never implemented. Verified against
+primary sources before writing anything, not assumed: the real UPnP
+ContentDirectory:1 spec's `res@bitrate` is bytes/second, not
+bits/second (a real, common bug class in other implementations); the
+real `lofty` 0.25.1 API exposes exactly this data via
+`tagged_file.properties()` (`lofty::properties::FileProperties`),
+parsed by default on the same read this project already does for tags
+— no new dependency, no new binary-parsing surface.
+
+- [x] `core::metadata_provider::Metadata` gained
+      `duration_millis`/`bitrate`/`sample_rate`/`bits_per_sample`/
+      `channels`, threaded through `index::TrackTags`/`Item`,
+      `scanner.rs`, and `metadata::tag_cache`'s cached record, the same
+      mechanical path every other tag field already takes.
+      `FilenameMetadata` fills all five with `None`; `TagMetadata`
+      computes them from the same opened `lofty` file it already reads
+      for tags (a small refactor split `read_tag` into
+      `open_tagged_file`/`primary_tag` so both the tag and
+      `.properties()` come from one open, not two).
+- [x] Milliseconds, not whole seconds: `lofty`'s `duration()` is
+      always present (never `Option`), and truncating to whole seconds
+      would show `0` — indistinguishable from "unknown" — for any
+      track under a second. `duration_millis` is `None` only when
+      `lofty` reports `Duration::ZERO` (its own signal it couldn't
+      determine one); a real short duration is never treated as
+      unknown. Rendered as the spec's own `H:MM:SS.mmm` grammar.
+- [x] Bitrate uses `overall_bitrate` (the whole resource, matching the
+      spec's literal wording), not `audio_bitrate` (audio-stream-only,
+      excludes container overhead) — converted from `lofty`'s kbps to
+      the DLNA bytes/sec convention once, in `metadata::tags`, so
+      nothing downstream ever sees `lofty`'s own unit.
+- [x] Every one of the five attributes is rendered independently:
+      present when `lofty` determined it, cleanly absent (never a
+      fabricated `0`) when it couldn't — confirmed for real MP3s,
+      which have no fixed PCM bit depth, so `bitsPerSample` is
+      correctly never emitted for them.
+
+**Verified:** `cargo build`/`test`/`fmt --check`/`clippy -D warnings`
+all clean (227 lib + integration tests). New tests confirm real sample
+rate/channel count/bitrate from the project's existing minimal-MP3
+fixture, a real non-zero `duration_millis` from a longer fixture (the
+shared 30-frame fixture's true duration is under a second, too short
+to prove the field populates at all), that all five round-trip
+unchanged through a cache hit, and that `<res>` renders all five
+correctly when known and omits all five cleanly when not. By hand
+against a real running instance, cross-checked against `ffprobe` on
+the exact same file: sample rate (44100), channels (2), and duration
+(5.2125s vs. our `0:00:05.213`) matched almost exactly; bitrate (16000
+vs. our 15875 bytes/sec) was within the expected ~1% variance between
+two independent empirical bitrate estimators.
+
+**Exit criterion:** a real file's Browse response carries accurate
+duration/bitrate/sample rate/channel count on `<res>`, cross-checked
+against an independent real tool. Met, verified above.
+
+---
+
 ## After MVP
 
 Not phased yet — pick these up only as real need shows up, per the

@@ -12,7 +12,7 @@ be Plex or Jellyfin.
 
 ## Status
 
-Phases 0 through 9, and 11 through 15, are done. A real DLNA client found this
+Phases 0 through 9, and 11 through 16, are done. A real DLNA client found this
 server over SSDP, browsed its library, and played back FLAC and MP3
 with working seek. What is left is Phase 10, wiring up CI. See
 [`docs/PLAN.md`](docs/PLAN.md) for the phased plan this repo tracks
@@ -36,6 +36,8 @@ instead of GitHub issues.
 - An optional persistent cache for those tag reads (`[tag_cache]`, off
   by default), so a large library's repeated rescans skip re-parsing a
   file's tags once nothing about it has changed.
+- Real duration, bitrate, sample rate, and channel count on every
+  track, read the same way as the tags above.
 
 ## What it does not do
 

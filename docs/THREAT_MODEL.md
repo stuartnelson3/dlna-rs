@@ -205,6 +205,13 @@ is). A cache write's own failure is swallowed for the same reason a
 scan already tolerates one bad file's tags: this is a rebuildable
 optimization, not a correctness-critical store.
 
+Phase 16's real audio properties (duration/bitrate/sample rate/bit
+depth/channel count) widen nothing here either: they come from the
+exact same `lofty::read_from_path` call `metadata::tags` already made
+for artist/album/genre, on the same config-provenance file, with the
+same error handling — a file `lofty` can't parse yields `None` for all
+five, never a panic.
+
 The Phase 7 rescan timer doesn't change this. It re-walks the *configured*
 media directories on a schedule — config-provenance paths the operator
 chose, not anything derived from network input — using the same scanner

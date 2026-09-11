@@ -716,8 +716,7 @@ mod tests {
             TrackTags {
                 artist: artist.map(str::to_string),
                 album: album.map(str::to_string),
-                genre: None,
-                has_art: false,
+                ..Default::default()
             },
         );
     }

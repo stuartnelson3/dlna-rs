@@ -42,16 +42,58 @@ fn render_one(entry: &Entry, base_url: &str) -> String {
             )
         }
         Entry::Item(i) => format!(
-            r#"<item id="{id}" parentID="{parent}" restricted="1"><dc:title>{title}</dc:title>{extras}<upnp:class>object.item.audioItem.musicTrack</upnp:class><res protocolInfo="{protocol_info}" size="{size}">{url}</res></item>"#,
+            r#"<item id="{id}" parentID="{parent}" restricted="1"><dc:title>{title}</dc:title>{extras}<upnp:class>object.item.audioItem.musicTrack</upnp:class><res protocolInfo="{protocol_info}" size="{size}"{res_attrs}>{url}</res></item>"#,
             id = escape(i.id.to_string()),
             parent = escape(i.parent_id.to_string()),
             title = escape(&i.title),
             extras = extra_item_fields(i, base_url),
             protocol_info = format::protocol_info(&i.path),
             size = i.size,
+            res_attrs = res_attributes(i),
             url = item_url(base_url, &i.id),
         ),
     }
+}
+
+/// The optional UPnP ContentDirectory:1 `<res>` attributes describing a
+/// track's real audio properties - `duration`/`bitrate`/
+/// `sampleFrequency`/`bitsPerSample`/`nrAudioChannels`, verified
+/// against the actual spec (bitrate is bytes/sec, not bits/sec - a
+/// common real-world bug in other implementations). Every one is
+/// independently optional, per the spec's own XSD (only `protocolInfo`
+/// is required on `<res>`), so this omits whichever ones a
+/// `MetadataProvider` couldn't determine rather than guessing - never a
+/// fabricated `0`. All five values are plain unsigned integers, never
+/// escaped: none can contain an XML-special character.
+fn res_attributes(item: &Item) -> String {
+    let mut attrs = String::new();
+    if let Some(millis) = item.duration_millis {
+        attrs.push_str(&format!(r#" duration="{}""#, format_duration(millis)));
+    }
+    if let Some(bitrate) = item.bitrate {
+        attrs.push_str(&format!(r#" bitrate="{bitrate}""#));
+    }
+    if let Some(rate) = item.sample_rate {
+        attrs.push_str(&format!(r#" sampleFrequency="{rate}""#));
+    }
+    if let Some(bits) = item.bits_per_sample {
+        attrs.push_str(&format!(r#" bitsPerSample="{bits}""#));
+    }
+    if let Some(channels) = item.channels {
+        attrs.push_str(&format!(r#" nrAudioChannels="{channels}""#));
+    }
+    attrs
+}
+
+/// Renders `total_millis` as the spec's `res@duration` grammar,
+/// `H*:MM:SS.F*`: an unpadded hour count (may be `0`), always
+/// zero-padded minutes/seconds, always three fractional digits.
+fn format_duration(total_millis: u64) -> String {
+    let hours = total_millis / 3_600_000;
+    let minutes = (total_millis % 3_600_000) / 60_000;
+    let seconds = (total_millis % 60_000) / 1000;
+    let millis = total_millis % 1000;
+    format!("{hours}:{minutes:02}:{seconds:02}.{millis:03}")
 }
 
 /// The real-tag elements a track's `MetadataProvider` may or may not
@@ -219,6 +261,11 @@ mod tests {
             album: None,
             genre: None,
             has_art: false,
+            duration_millis: None,
+            bitrate: None,
+            sample_rate: None,
+            bits_per_sample: None,
+            channels: None,
         };
         let xml = render(&[Entry::Item(item)], "http://192.168.1.5:8200");
         assert_well_formed(&xml);
@@ -244,6 +291,11 @@ mod tests {
             album: Some("Test Album".to_string()),
             genre: Some("Test Genre".to_string()),
             has_art: true,
+            duration_millis: Some(3_661_500), // 1:01:01.500
+            bitrate: Some(16000),
+            sample_rate: Some(44100),
+            bits_per_sample: Some(16),
+            channels: Some(2),
         });
 
         let xml = render(std::slice::from_ref(&entry), "http://192.168.1.5:8200");
@@ -256,6 +308,11 @@ mod tests {
             "<upnp:albumArtURI>http://192.168.1.5:8200/art/{}</upnp:albumArtURI>",
             entry.id()
         )));
+        assert!(xml.contains(r#"duration="1:01:01.500""#));
+        assert!(xml.contains(r#"bitrate="16000""#));
+        assert!(xml.contains(r#"sampleFrequency="44100""#));
+        assert!(xml.contains(r#"bitsPerSample="16""#));
+        assert!(xml.contains(r#"nrAudioChannels="2""#));
     }
 
     #[test]
@@ -273,15 +330,29 @@ mod tests {
         ] {
             assert!(!xml.contains(element), "should not render <{element}>");
         }
+        for attribute in [
+            "duration=",
+            "bitrate=",
+            "sampleFrequency=",
+            "bitsPerSample=",
+            "nrAudioChannels=",
+        ] {
+            assert!(!xml.contains(attribute), "should not render {attribute}");
+        }
+    }
+
+    #[test]
+    fn format_duration_renders_the_hours_digit() {
+        assert_eq!(format_duration(3_661_500), "1:01:01.500");
+        assert_eq!(format_duration(500), "0:00:00.500");
+        assert_eq!(format_duration(0), "0:00:00.000");
     }
 
     #[test]
     fn escapes_special_characters_in_tag_fields() {
         let entry = item_with_tags(crate::index::TrackTags {
             artist: Some("Rock & Roll <Live>".to_string()),
-            album: None,
-            genre: None,
-            has_art: false,
+            ..Default::default()
         });
 
         let xml = render(&[entry], "http://192.168.1.5:8200");

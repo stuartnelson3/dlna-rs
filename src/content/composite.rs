@@ -280,9 +280,7 @@ mod tests {
             std::time::SystemTime::now(),
             crate::index::TrackTags {
                 artist: Some("Ke$ha".to_string()),
-                album: None,
-                genre: None,
-                has_art: false,
+                ..Default::default()
             },
         );
         let index = SharedIndex::new(builder.build());

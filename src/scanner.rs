@@ -88,6 +88,11 @@ fn scan_one_directory(
                 album: read.album,
                 genre: read.genre,
                 has_art: read.has_art,
+                duration_millis: read.duration_millis,
+                bitrate: read.bitrate,
+                sample_rate: read.sample_rate,
+                bits_per_sample: read.bits_per_sample,
+                channels: read.channels,
             };
             builder.add_item_with_tags(
                 &parent,

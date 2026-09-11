@@ -23,6 +23,14 @@ pub struct Metadata {
     pub album: Option<String>,
     pub genre: Option<String>,
     pub has_art: bool,
+    pub duration_millis: Option<u64>,
+    /// Bytes/sec, the DLNA `res@bitrate` convention - already
+    /// converted here from whatever unit the backend reports, so
+    /// nothing downstream needs to know or care what that was.
+    pub bitrate: Option<u32>,
+    pub sample_rate: Option<u32>,
+    pub bits_per_sample: Option<u8>,
+    pub channels: Option<u8>,
 }
 
 pub trait MetadataProvider: Send + Sync {
