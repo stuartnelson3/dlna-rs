@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT OR Apache-2.0"
+description = "A DLNA/UPnP-AV media server for the LAN"
+repository = "https://github.com/stuartnelson3/dlna-rs"
+readme = "README.md"
+keywords = ["dlna", "upnp", "media-server", "ssdp"]
+categories = ["multimedia", "network-programming"]
 
 [dependencies]
 bytes = "1.12.1"
