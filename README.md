@@ -1,5 +1,7 @@
 # dlna-rs
 
+[![Crates.io](https://img.shields.io/crates/v/dlna-rs.svg)](https://crates.io/crates/dlna-rs)
+
 A DLNA/UPnP-AV media server for the LAN, written in Rust.
 
 The pitch is basically MiniDLNA: point it at a folder of music, and it
@@ -44,7 +46,20 @@ No transcoding, no codec work, no Chromecast, no AirPlay, no HLS, no
 accounts. This is LAN-only. It is not meant to be port-forwarded to the
 internet.
 
-## Building
+## Installing
+
+Published on [crates.io](https://crates.io/crates/dlna-rs):
+
+```
+cargo install dlna-rs
+cp examples/dlna-rs.example.toml dlna-rs.toml   # edit paths/interface for your setup
+dlna-rs --config dlna-rs.toml
+```
+
+Prebuilt static binaries (`x86_64`/`aarch64`, musl) are also attached to
+each [GitHub release](https://github.com/stuartnelson3/dlna-rs/releases).
+
+## Building from source
 
 ```
 cargo build --release
