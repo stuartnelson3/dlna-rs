@@ -61,11 +61,21 @@ jobs:
       # on which architecture it's eventually compiled for. No
       # dedicated file-output flag, so this redirects stdout.
       - run: cargo install cargo-geiger --locked
-      - run: cargo geiger --output-format GitHubMarkdown > geiger-report.md
+      # Informational only, never a release gate: geiger's own
+      # syn-based parser can choke on newer syntax in a dependency it
+      # doesn't control - seen for real, on this exact workflow:
+      # signal-hook-registry (pulled in via tokio's "signal" feature)
+      # failed to parse, which is a limitation of geiger's parser, not
+      # a real finding about this project's own code (`#![forbid(unsafe_code)]`
+      # throughout). A real release must never block on that.
+      - name: run cargo geiger
+        continue-on-error: true
+        run: cargo geiger --output-format GitHubMarkdown > geiger-report.md
       - uses: actions/upload-artifact@v4
         with:
           name: geiger-report
           path: geiger-report.md
+          if-no-files-found: warn
 
   release:
     name: create release
