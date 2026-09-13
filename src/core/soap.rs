@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 
 use quick_xml::escape::escape;
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::events::{BytesRef, BytesStart, Event};
 use quick_xml::reader::Reader;
 
 /// Real ContentDirectory/ConnectionManager requests are a handful of short
@@ -47,8 +47,14 @@ pub fn parse_action(body: &[u8]) -> Result<SoapAction, ParseError> {
     }
     let text = std::str::from_utf8(body).map_err(|_| ParseError::NotUtf8)?;
 
+    // Deliberately not `config_mut().trim_text(true)`: that setting
+    // trims every `Text` event independently, but quick-xml splits an
+    // element's content into separate `Text`/`GeneralRef` events around
+    // any entity reference - trimming each fragment on its own eats
+    // real whitespace sitting right next to a real `&amp;`/`&lt;`/etc.
+    // `read_text_until_end` below trims the fully assembled value once
+    // instead, after every fragment (including references) is in.
     let mut reader = Reader::from_str(text);
-    reader.config_mut().trim_text(true);
 
     find_body(&mut reader)?;
     let (name, has_content) = read_action_open(&mut reader)?;
@@ -109,13 +115,50 @@ fn read_text_until_end(reader: &mut Reader<&[u8]>) -> Result<String, ParseError>
     loop {
         match reader.read_event().map_err(|_| ParseError::Malformed)? {
             Event::Eof => return Err(ParseError::Malformed),
-            Event::End(_) => return Ok(value),
+            // Trimmed once, here, on the fully assembled value - not per
+            // fragment (see the comment on `trim_text` above).
+            Event::End(_) => return Ok(value.trim().to_string()),
             Event::Text(t) => {
                 let decoded = t.decode().map_err(|_| ParseError::Malformed)?;
                 value.push_str(&decoded);
             }
+            // quick-xml surfaces an entity/character reference (`&amp;`,
+            // `&#38;`, ...) as its own event, separate from the plain
+            // text around it - real regression, found on a real device:
+            // an untreated reference here was silently dropped instead
+            // of decoded, which also meant `trim_text` trimmed the text
+            // fragments on either side of it independently, eating the
+            // real whitespace next to it too. "Danger Mouse & Black
+            // Thought" round-tripped through a Browse response and back
+            // into a client's next request came back as "Danger
+            // Mouseblack Thought" - silently corrupting any real value
+            // (artist/album tag, or a tag-derived object ID) containing
+            // one of the five predefined XML entities.
+            Event::GeneralRef(r) => value.push_str(&resolve_general_ref(&r)?),
             _ => {}
         }
+    }
+}
+
+/// Resolves an XML general reference to its real character: a numeric
+/// character reference (`&#38;`/`&#x26;`), or one of the five entities
+/// XML predefines with no DTD (`amp`, `lt`, `gt`, `apos`, `quot`) - the
+/// only kind of reference this project's SOAP/DIDL grammar can ever
+/// contain, since nothing here declares or reads a DTD. `quick_xml`'s
+/// own resolver for this lives behind its `serialize` feature (pulled
+/// in only for its serde integration) - not worth enabling a whole
+/// feature for five fixed values.
+fn resolve_general_ref(r: &BytesRef) -> Result<String, ParseError> {
+    if let Some(ch) = r.resolve_char_ref().map_err(|_| ParseError::Malformed)? {
+        return Ok(ch.to_string());
+    }
+    match r.decode().map_err(|_| ParseError::Malformed)?.as_ref() {
+        "amp" => Ok("&".to_string()),
+        "lt" => Ok("<".to_string()),
+        "gt" => Ok(">".to_string()),
+        "apos" => Ok("'".to_string()),
+        "quot" => Ok("\"".to_string()),
+        _ => Err(ParseError::Malformed),
     }
 }
 
@@ -175,6 +218,52 @@ mod tests {
             "BrowseDirectChildren"
         );
         assert_eq!(action.arguments.get("SortCriteria").unwrap(), "");
+    }
+
+    #[test]
+    fn an_escaped_ampersand_decodes_with_its_surrounding_whitespace_intact() {
+        // Real regression, found on a real device: quick-xml surfaces
+        // `&amp;` as its own event, separate from the text around it.
+        // An unhandled reference silently dropped the character, and
+        // the reader's old `trim_text(true)` setting independently
+        // trimmed the text either side of it, eating real whitespace
+        // too - "danger mouse & black thought" round-tripped down to
+        // "danger mouseblack thought", breaking every subsequent lookup
+        // by that value (a tag-derived object ID, in this project's
+        // real case).
+        let body = br#"<?xml version="1.0"?>
+            <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+              <s:Body>
+                <u:Browse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">
+                  <ObjectID>artists$tag-artist:danger mouse &amp; black thought</ObjectID>
+                  <BrowseFlag>BrowseDirectChildren</BrowseFlag>
+                  <Filter>*</Filter>
+                  <StartingIndex>0</StartingIndex>
+                  <RequestedCount>0</RequestedCount>
+                  <SortCriteria></SortCriteria>
+                </u:Browse>
+              </s:Body>
+            </s:Envelope>"#;
+        let action = parse_action(body).unwrap();
+        assert_eq!(
+            action.arguments.get("ObjectID").unwrap(),
+            "artists$tag-artist:danger mouse & black thought"
+        );
+    }
+
+    #[test]
+    fn every_predefined_entity_and_a_numeric_char_ref_decode_correctly() {
+        let body = br#"<?xml version="1.0"?>
+            <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+              <s:Body>
+                <u:Browse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">
+                  <ObjectID>&amp;&lt;&gt;&apos;&quot;&#38;&#x26;</ObjectID>
+                  <BrowseFlag>x</BrowseFlag>
+                </u:Browse>
+              </s:Body>
+            </s:Envelope>"#;
+        let action = parse_action(body).unwrap();
+        assert_eq!(action.arguments.get("ObjectID").unwrap(), "&<>'\"&&");
     }
 
     #[test]

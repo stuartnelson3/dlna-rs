@@ -740,3 +740,73 @@ async fn art_for_an_unknown_id_is_404() {
         .unwrap();
     assert_eq!(response.status(), 404);
 }
+
+#[tokio::test]
+async fn browsing_into_a_tag_artist_whose_name_contains_an_ampersand_works_over_real_http() {
+    // Real bug report: clicking the artist "Danger Mouse & Black
+    // Thought" in a real DLNA app reset the connection. Reproduces the
+    // full real wire round-trip (SOAP request -> response -> a second
+    // real SOAP request using the id straight from that response) that
+    // an in-process unit test skips entirely.
+    let dir = tempfile::tempdir().unwrap();
+    write_tagged_mp3_with_art(&dir.path().join("track.mp3"));
+    {
+        use lofty::file::{AudioFile, TaggedFileExt};
+        use lofty::tag::Accessor;
+        let path = dir.path().join("track.mp3");
+        let mut tagged_file = lofty::read_from_path(&path).unwrap();
+        let tag = tagged_file.primary_tag_mut().unwrap();
+        tag.set_artist("Danger Mouse & Black Thought".to_string());
+        tag.set_album("Cheat Codes".to_string());
+        tagged_file
+            .save_to_path(&path, lofty::config::WriteOptions::default())
+            .unwrap();
+    }
+
+    let library = LibraryConfig {
+        views: vec![View::Artists],
+        recently_added: RecentlyAddedConfig::default(),
+    };
+    let (base, _handle) = start_server_with_library(&dir, library).await;
+
+    let root_didl = browse_didl(&base, "0").await;
+    let artists_mount_id = extract_attr(&root_didl, "container", "id");
+    let artists_didl = browse_didl(&base, &artists_mount_id).await;
+    // `browse_didl` only undoes the SOAP envelope's own escaping - the
+    // DIDL-Lite body it returns is itself still real XML, so a literal
+    // "&" in a real value is still spelled "&amp;" here, same as a real
+    // client would see before parsing this string as its own document.
+    assert!(
+        artists_didl.contains("Danger Mouse &amp; Black Thought"),
+        "expected the artist in the listing: {artists_didl}"
+    );
+    let artist_id = extract_attr(&artists_didl, "container", "id");
+    assert_eq!(artist_id, "artists$tag-artist:danger mouse & black thought");
+
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{base}/ContentDirectory/control"))
+        .body(browse_request_body(
+            &xml_escape(&artist_id),
+            "BrowseDirectChildren",
+        ))
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.text().await.unwrap();
+    assert_eq!(
+        status, 200,
+        "browsing into the artist by its own listed id must not fault: {body}"
+    );
+}
+
+/// A minimal, correct XML text escaper for building a well-formed
+/// second request from a value pulled out of a first response - the
+/// same escaping any real UPnP control point must apply, and the thing
+/// missing if it naively re-interpolates unescaped text instead.
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
