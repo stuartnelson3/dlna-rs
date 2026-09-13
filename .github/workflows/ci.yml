@@ -29,7 +29,7 @@ jobs:
       # 1.89 as of its own more recent releases, so 1.90 is the real
       # floor either way) - a deliberate MSRV bump, confirmed with the
       # user rather than silently pulling an older redb to keep 1.85.
-      - uses: dtolnay/rust-toolchain@1.90
+      - uses: dtolnay/rust-toolchain@1.120
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --all-targets --all-features
 
