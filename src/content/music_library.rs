@@ -125,10 +125,26 @@ impl MusicLibraryView {
     /// the tag's original casing, only for the `Tag` case, for picking
     /// a deterministic display title once albums are grouped by artist
     /// in `build_artist_containers`.
+    ///
+    /// An album with no consistent artist tag of its own (missing tags
+    /// entirely, or tracks that disagree) still checks its real parent
+    /// folder's name against every *other* album's consistent tag,
+    /// normalized the same way - if they match, it joins that same
+    /// `Tag` artist instead of minting a separate `Folder`-keyed one.
+    /// Real regression: an album with untagged tracks sitting under a
+    /// real "Cannonball Adderley" folder showed up as a second,
+    /// unmerged "Cannonball Adderley" artist alongside the tag-unified
+    /// one, confirmed on a real running server.
     fn resolve_album_facts(
         &self,
         by_album: &HashMap<ObjectId, Vec<Item>>,
     ) -> HashMap<ObjectId, Resolved> {
+        let tag_artist_keys: HashSet<String> = by_album
+            .values()
+            .filter_map(|tracks| consistent_tag_value(tracks, |i| i.artist.as_deref()))
+            .map(|name| normalize_artist_key(&name))
+            .collect();
+
         let mut resolved = HashMap::new();
         for (album_id, tracks) in by_album {
             let Some(Entry::Container(real_container)) = self.index.entry(album_id) else {
@@ -142,14 +158,7 @@ impl MusicLibraryView {
                         Some(ArtistKey::Tag(normalize_artist_key(&name))),
                         Some(name),
                     ),
-                    None => {
-                        let folder_key = real_container
-                            .parent_id
-                            .clone()
-                            .filter(|parent| *parent != ObjectId::root())
-                            .map(ArtistKey::Folder);
-                        (folder_key, None)
-                    }
+                    None => self.folder_artist_key(&real_container, &tag_artist_keys),
                 };
             resolved.insert(
                 album_id.clone(),
@@ -161,6 +170,38 @@ impl MusicLibraryView {
             );
         }
         resolved
+    }
+
+    /// The `ArtistKey` for an album with no consistent artist tag of
+    /// its own: its real parent folder's title, if that title matches
+    /// (case/whitespace-insensitively) a `Tag` artist some other album
+    /// already established - joining that artist rather than standing
+    /// alone under an identical-looking name - or the parent folder's
+    /// own identity otherwise, same as before this reconciliation
+    /// existed.
+    fn folder_artist_key(
+        &self,
+        album_container: &Container,
+        tag_artist_keys: &HashSet<String>,
+    ) -> (Option<ArtistKey>, Option<String>) {
+        let parent = album_container
+            .parent_id
+            .clone()
+            .filter(|parent| *parent != ObjectId::root());
+        let parent_title = parent
+            .as_ref()
+            .and_then(|id| self.index.entry(id))
+            .and_then(|entry| match entry {
+                Entry::Container(c) => Some(c.title),
+                Entry::Item(_) => None,
+            });
+
+        match parent_title.map(|title| (normalize_artist_key(&title), title)) {
+            Some((normalized, title)) if tag_artist_keys.contains(&normalized) => {
+                (Some(ArtistKey::Tag(normalized)), Some(title))
+            }
+            _ => (parent.map(ArtistKey::Folder), None),
+        }
     }
 
     /// Every album that resolved to an artist key, grouped by that key
@@ -822,6 +863,55 @@ mod tests {
         let mut album_titles = titles(&albums);
         album_titles.sort_unstable();
         assert_eq!(album_titles, vec!["AC-DC - Back in Black", "TNT"]);
+    }
+
+    #[test]
+    fn an_untagged_album_under_a_real_artist_folder_joins_a_matching_tag_artist() {
+        // Real regression, confirmed on a real running server: an album
+        // whose tracks carry no artist tag at all sits under a real
+        // "Cannonball Adderley" folder, while every *other* Cannonball
+        // Adderley album is unified by a consistent artist tag. Before
+        // this fix, the untagged album showed up as a second, separate
+        // "Cannonball Adderley" artist instead of joining the first.
+        let mut builder = IndexBuilder::new();
+        let artist_folder =
+            builder.add_container(&ObjectId::root(), "Cannonball Adderley".to_string());
+        let mercy = builder.add_container(&artist_folder, "Mercy, Mercy, Mercy!".to_string());
+        tagged_item(
+            &mut builder,
+            &mercy,
+            "01.mp3",
+            "/m/mercy/01.mp3",
+            None,
+            None,
+        );
+
+        let somethin_else = builder.add_container(&ObjectId::root(), "Somethin' Else".to_string());
+        tagged_item(
+            &mut builder,
+            &somethin_else,
+            "01.mp3",
+            "/m/se/01.mp3",
+            Some("Cannonball Adderley"),
+            None,
+        );
+
+        let view = MusicLibraryView::new(SharedIndex::new(builder.build()), Mode::Artists);
+        let artists = view.children(&ObjectId::root()).unwrap();
+        assert_eq!(
+            titles(&artists),
+            vec!["Cannonball Adderley"],
+            "the untagged album's real folder name matches an existing tag artist, so they must merge into one"
+        );
+        let Entry::Container(artist) = &artists[0] else {
+            panic!("expected a container");
+        };
+        assert_eq!(artist.child_count, 2);
+
+        let albums = view.children(&artist.id).unwrap();
+        let mut album_titles = titles(&albums);
+        album_titles.sort_unstable();
+        assert_eq!(album_titles, vec!["Mercy, Mercy, Mercy!", "Somethin' Else"]);
     }
 
     #[test]
