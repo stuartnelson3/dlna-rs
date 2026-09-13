@@ -45,7 +45,7 @@ jobs:
         run: |
           mkdir dist
           cp "target/${{ matrix.target }}/release/dlna-rs" "dist/dlna-rs-${{ matrix.target }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dlna-rs-${{ matrix.target }}
           path: dist/dlna-rs-${{ matrix.target }}
@@ -71,7 +71,7 @@ jobs:
       - name: run cargo geiger
         continue-on-error: true
         run: cargo geiger --output-format GitHubMarkdown > geiger-report.md
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: geiger-report
           path: geiger-report.md
