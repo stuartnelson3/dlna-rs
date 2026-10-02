@@ -13,7 +13,7 @@ jobs:
     name: build & test (stable)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --all-targets --all-features
@@ -23,7 +23,7 @@ jobs:
     name: build (MSRV)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Keep in sync with Cargo.toml's rust-version. Bumped from 1.85 in
       # Phase 15 for real redb 4.2.0 (redb needs 1.90; lofty 0.25.1 needs
       # 1.89 as of its own more recent releases, so 1.90 is the real
@@ -37,7 +37,7 @@ jobs:
     name: cargo fmt --check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -47,7 +47,7 @@ jobs:
     name: cargo clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -66,7 +66,7 @@ jobs:
       contents: read
       checks: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -75,7 +75,7 @@ jobs:
     name: cargo deny
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   fuzz-smoke:
@@ -85,7 +85,7 @@ jobs:
       matrix:
         target: [ssdp_parse, soap_parse, range_parse, path_resolve]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
         with:
