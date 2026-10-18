@@ -1,0 +1,9 @@
+# cargo audit reads this file. It does not read deny.toml, so keep this
+# list in sync with the [advisories] ignore list there.
+
+[advisories]
+ignore = [
+    # paste, unmaintained, pulled in by lofty. See deny.toml for the
+    # reasoning behind accepting it.
+    "RUSTSEC-2024-0436",
+]
