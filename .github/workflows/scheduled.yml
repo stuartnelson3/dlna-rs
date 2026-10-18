@@ -14,11 +14,15 @@ jobs:
   audit:
     name: cargo audit
     runs-on: ubuntu-latest
-    # See ci.yml's own audit job for why this is needed: the action
-    # posts its result as a check run, which needs checks: write.
+    # See ci.yml's own audit job for why checks: write is needed. On a
+    # schedule event the action also opens an issue for each finding,
+    # including informational warnings such as an unmaintained crate,
+    # which needs issues: write. Without it the job fails with "Resource
+    # not accessible by integration" even when no vulnerability is found.
     permissions:
       contents: read
       checks: write
+      issues: write
     steps:
       - uses: actions/checkout@v4
       - uses: rustsec/audit-check@v2
