@@ -657,33 +657,27 @@ fn synthetic_artist_id(normalized_key: &str) -> ObjectId {
     ObjectId::new(format!("tag-artist:{normalized_key}"))
 }
 
-/// Sorts a container's children for display: tracks by parsed track
-/// number (numbered tracks first, in order; unnumbered ones after, by
-/// title), sub-containers by title. `sort_by` is stable, so ties keep
+/// Sorts a container's children for display: sub-containers first, by
+/// title, then tracks by track number (numbered tracks in order,
+/// unnumbered ones after, by title). A folder holding both (an album
+/// with `CD1`/`CD2` subfolders plus loose bonus tracks) therefore keeps
+/// its tracks in album order instead of interleaving them with the
+/// subfolders alphabetically. `sort_by_key` is stable, so ties keep
 /// their original order.
 pub(crate) fn sort_children(children: &mut [Entry]) {
-    if children.iter().all(|entry| matches!(entry, Entry::Item(_))) {
-        children.sort_by_key(track_sort_key);
-    } else {
-        children.sort_by(|a, b| title_of(a).cmp(title_of(b)));
-    }
+    children.sort_by_key(sort_key);
 }
 
-fn track_sort_key(entry: &Entry) -> (bool, Option<u32>, String) {
+/// `(is_track, has_no_track_number, track_number, title)`.
+fn sort_key(entry: &Entry) -> (bool, bool, Option<u32>, String) {
     match entry {
         Entry::Item(item) => (
+            true,
             item.track_number.is_none(),
             item.track_number,
             item.title.clone(),
         ),
-        Entry::Container(c) => (false, None, c.title.clone()),
-    }
-}
-
-fn title_of(entry: &Entry) -> &str {
-    match entry {
-        Entry::Container(c) => &c.title,
-        Entry::Item(i) => &i.title,
+        Entry::Container(c) => (false, false, None, c.title.clone()),
     }
 }
 
@@ -749,7 +743,13 @@ mod tests {
     }
 
     fn titles(entries: &[Entry]) -> Vec<&str> {
-        entries.iter().map(title_of).collect()
+        entries
+            .iter()
+            .map(|entry| match entry {
+                Entry::Container(c) => c.title.as_str(),
+                Entry::Item(i) => i.title.as_str(),
+            })
+            .collect()
     }
 
     #[test]

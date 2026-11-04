@@ -96,6 +96,43 @@ mod tests {
     }
 
     #[test]
+    fn subfolders_come_first_then_tracks_in_track_order() {
+        use crate::index::TrackTags;
+        use std::path::PathBuf;
+        use std::time::SystemTime;
+
+        let mut builder = IndexBuilder::new();
+        let album = builder.add_container(&ObjectId::root(), "Album".to_string());
+        builder.add_container(&album, "CD2".to_string());
+        builder.add_container(&album, "CD1".to_string());
+        for (title, track) in [("Bonus B", Some(2)), ("Bonus A", Some(1))] {
+            builder.add_item_with_tags(
+                &album,
+                title.to_string(),
+                PathBuf::from(format!("/music/{title}.flac")),
+                1,
+                SystemTime::UNIX_EPOCH,
+                TrackTags {
+                    track_number: track,
+                    ..Default::default()
+                },
+            );
+        }
+        let mirror = FolderMirror::new(SharedIndex::new(builder.build()));
+
+        let titles: Vec<String> = mirror
+            .children(&album)
+            .unwrap()
+            .into_iter()
+            .map(|e| match e {
+                Entry::Item(i) => i.title,
+                Entry::Container(c) => c.title,
+            })
+            .collect();
+        assert_eq!(titles, ["CD1", "CD2", "Bonus A", "Bonus B"]);
+    }
+
+    #[test]
     fn reflects_a_rescan_replacing_the_shared_index() {
         let shared = SharedIndex::new(IndexBuilder::new().build());
         let mirror = FolderMirror::new(shared.clone());
