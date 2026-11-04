@@ -84,6 +84,7 @@ pub struct Item {
     pub artist: Option<String>,
     pub album: Option<String>,
     pub genre: Option<String>,
+    pub track_number: Option<u32>,
     pub has_art: bool,
     pub duration_millis: Option<u64>,
     pub bitrate: Option<u32>,
@@ -94,14 +95,15 @@ pub struct Item {
 
 /// The tag-derived facts an item carries, read once at scan time by a
 /// `MetadataProvider` and cached here — never re-read per Browse call.
-/// `title`/track number aren't part of this: the scanner already derives
-/// `title` its own way, and track number only matters for in-album sort
-/// order, not storage (see `content::music_library`).
+/// `title` isn't part of this: the scanner derives it its own way. The
+/// track number is, since it decides display order (tag first, filename
+/// as the fallback, both resolved by the `MetadataProvider`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrackTags {
     pub artist: Option<String>,
     pub album: Option<String>,
     pub genre: Option<String>,
+    pub track_number: Option<u32>,
     pub has_art: bool,
     pub duration_millis: Option<u64>,
     pub bitrate: Option<u32>,
@@ -182,6 +184,7 @@ impl Index {
                 artist: tags.artist.clone(),
                 album: tags.album.clone(),
                 genre: tags.genre.clone(),
+                track_number: tags.track_number,
                 has_art: tags.has_art,
                 duration_millis: tags.duration_millis,
                 bitrate: tags.bitrate,

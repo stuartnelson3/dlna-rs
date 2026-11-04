@@ -2,6 +2,7 @@
 //! The true minimal baseline `ContentSource` — no grouping, no
 //! heuristics, just what's on disk.
 
+use crate::content::music_library::sort_children;
 use crate::core::content_source::ContentSource;
 use crate::index::{Entry, ObjectId, SharedIndex};
 
@@ -21,7 +22,9 @@ impl FolderMirror {
 
 impl ContentSource for FolderMirror {
     fn children(&self, id: &ObjectId) -> Option<Vec<Entry>> {
-        self.index.children(id)
+        let mut children = self.index.children(id)?;
+        sort_children(&mut children);
+        Some(children)
     }
 
     fn entry(&self, id: &ObjectId) -> Option<Entry> {
@@ -48,6 +51,48 @@ mod tests {
     fn root_of_an_empty_index_is_an_empty_container() {
         let mirror = FolderMirror::new(SharedIndex::new(IndexBuilder::new().build()));
         assert_eq!(mirror.children(&ObjectId::root()), Some(Vec::new()));
+    }
+
+    #[test]
+    fn children_are_sorted_by_track_number_not_insertion_order() {
+        use crate::index::TrackTags;
+        use std::path::PathBuf;
+        use std::time::SystemTime;
+
+        let mut builder = IndexBuilder::new();
+        let album = builder.add_container(&ObjectId::root(), "Album".to_string());
+        // Inserted out of order, with titles that sort differently from
+        // their track numbers, the way tag titles do.
+        for (title, track) in [
+            ("Zebra", Some(1)),
+            ("Apple", Some(3)),
+            ("Mango", Some(2)),
+            ("Loose", None),
+        ] {
+            builder.add_item_with_tags(
+                &album,
+                title.to_string(),
+                PathBuf::from(format!("/music/{title}.flac")),
+                1,
+                SystemTime::UNIX_EPOCH,
+                TrackTags {
+                    track_number: track,
+                    ..Default::default()
+                },
+            );
+        }
+        let mirror = FolderMirror::new(SharedIndex::new(builder.build()));
+
+        let titles: Vec<String> = mirror
+            .children(&album)
+            .unwrap()
+            .into_iter()
+            .map(|e| match e {
+                Entry::Item(i) => i.title,
+                Entry::Container(c) => c.title,
+            })
+            .collect();
+        assert_eq!(titles, ["Zebra", "Mango", "Apple", "Loose"]);
     }
 
     #[test]

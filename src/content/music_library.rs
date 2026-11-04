@@ -28,9 +28,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime};
 
 use crate::core::content_source::ContentSource;
-use crate::core::metadata_provider::MetadataProvider;
 use crate::index::{Container, Entry, Item, ObjectId, SharedIndex};
-use crate::metadata::filename::FilenameMetadata;
 
 #[derive(Debug, Clone)]
 pub enum Mode {
@@ -663,7 +661,7 @@ fn synthetic_artist_id(normalized_key: &str) -> ObjectId {
 /// number (numbered tracks first, in order; unnumbered ones after, by
 /// title), sub-containers by title. `sort_by` is stable, so ties keep
 /// their original order.
-fn sort_children(children: &mut [Entry]) {
+pub(crate) fn sort_children(children: &mut [Entry]) {
     if children.iter().all(|entry| matches!(entry, Entry::Item(_))) {
         children.sort_by_key(track_sort_key);
     } else {
@@ -673,14 +671,11 @@ fn sort_children(children: &mut [Entry]) {
 
 fn track_sort_key(entry: &Entry) -> (bool, Option<u32>, String) {
     match entry {
-        Entry::Item(item) => {
-            let metadata = FilenameMetadata.metadata(&item.path);
-            (
-                metadata.track_number.is_none(),
-                metadata.track_number,
-                metadata.title,
-            )
-        }
+        Entry::Item(item) => (
+            item.track_number.is_none(),
+            item.track_number,
+            item.title.clone(),
+        ),
         Entry::Container(c) => (false, None, c.title.clone()),
     }
 }
@@ -712,6 +707,7 @@ fn is_recent_enough(modified: SystemTime, cutoff: Option<SystemTime>) -> bool {
 mod tests {
     use super::*;
     use crate::index::{IndexBuilder, TrackTags};
+    use crate::metadata::filename::FilenameMetadata;
     use std::path::PathBuf;
 
     /// Builds a small tree:

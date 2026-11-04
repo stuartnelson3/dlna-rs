@@ -79,14 +79,14 @@ fn scan_one_directory(
             // `read.title` is the parsed title (track number and
             // extension stripped, e.g. "01 - Track.mp3" -> "Track") -
             // not the raw filename computed above, which containers use
-            // as-is. Track number itself isn't used here: it only
-            // matters for in-album sort order, read fresh at Browse
-            // time by `content::music_library`.
+            // as-is. The track number is stored with the tags so
+            // both the Folders and Albums views can sort by it.
             let read = tags.metadata(entry.path());
             let track_tags = TrackTags {
                 artist: read.artist,
                 album: read.album,
                 genre: read.genre,
+                track_number: read.track_number,
                 has_art: read.has_art,
                 duration_millis: read.duration_millis,
                 bitrate: read.bitrate,

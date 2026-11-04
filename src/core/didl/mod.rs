@@ -246,6 +246,7 @@ mod tests {
             artist: None,
             album: None,
             genre: None,
+            track_number: None,
             has_art: false,
             duration_millis: None,
             bitrate: None,
@@ -276,6 +277,7 @@ mod tests {
             artist: Some("Test Artist".to_string()),
             album: Some("Test Album".to_string()),
             genre: Some("Test Genre".to_string()),
+            track_number: None,
             has_art: true,
             duration_millis: Some(3_661_500), // 1:01:01.500
             bitrate: Some(16000),
