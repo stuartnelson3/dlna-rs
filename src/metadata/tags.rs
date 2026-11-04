@@ -46,10 +46,12 @@ impl TagMetadata {
 
 impl MetadataProvider for TagMetadata {
     fn metadata(&self, path: &Path) -> Metadata {
-        // title/track_number come from FilenameMetadata, not the tag -
-        // §5.1's folder-structure grouping is what actually uses these,
-        // and that logic is already tested; this method only adds to
-        // it, never replaces it.
+        // title/track_number prefer the tag, falling back to the
+        // filename when the tag has none (or only blank text). Real
+        // regression: "Artist - Album - 01 - Title.flac" files, whose
+        // tags are correct, were showing the whole filename as the
+        // title with no track number, because only the filename was
+        // ever consulted.
         let filename = FilenameMetadata.metadata(path);
         let tagged_file = open_tagged_file(path);
 
@@ -84,7 +86,20 @@ impl MetadataProvider for TagMetadata {
         let has_embedded_art = tag.as_ref().is_some_and(|t| !t.pictures().is_empty());
         let has_art = has_embedded_art || find_cover_file(path, &self.media_roots).is_some();
 
+        let title = tag
+            .as_ref()
+            .and_then(Accessor::title)
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .unwrap_or(filename.title);
+        let track_number = tag
+            .as_ref()
+            .and_then(Accessor::track)
+            .or(filename.track_number);
+
         Metadata {
+            title,
+            track_number,
             artist: tag
                 .as_ref()
                 .and_then(Accessor::artist)
@@ -103,7 +118,6 @@ impl MetadataProvider for TagMetadata {
             sample_rate,
             bits_per_sample,
             channels,
-            ..filename
         }
     }
 }
@@ -259,6 +273,36 @@ mod tests {
         assert_eq!(metadata.album.as_deref(), Some("Test Album"));
         assert_eq!(metadata.genre.as_deref(), Some("Test Genre"));
         assert!(!metadata.has_art);
+    }
+
+    #[test]
+    fn tag_title_and_track_number_win_over_the_filename() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Artist - Album - 01 - Real Title.mp3");
+        std::fs::write(&path, minimal_mp3()).unwrap();
+        let mut tagged_file = lofty::read_from_path(&path).unwrap();
+        tagged_file.insert_tag(Tag::new(tagged_file.primary_tag_type()));
+        let tag = tagged_file.primary_tag_mut().unwrap();
+        tag.set_title("Real Title".to_string());
+        tag.set_track(1);
+        tagged_file
+            .save_to_path(&path, lofty::config::WriteOptions::default())
+            .unwrap();
+
+        let metadata = tags_for(&dir).metadata(&path);
+        assert_eq!(metadata.title, "Real Title");
+        assert_eq!(metadata.track_number, Some(1));
+    }
+
+    #[test]
+    fn a_tag_without_a_title_falls_back_to_the_filename() {
+        let (dir, path) = fixture_with(|tag| tag.set_artist("A".to_string()));
+        let renamed = dir.path().join("07 - From The Name.mp3");
+        std::fs::rename(&path, &renamed).unwrap();
+
+        let metadata = tags_for(&dir).metadata(&renamed);
+        assert_eq!(metadata.title, "From The Name");
+        assert_eq!(metadata.track_number, Some(7));
     }
 
     #[test]
