@@ -372,7 +372,7 @@ impl MusicLibraryView {
             .values()
             .map(|entry| entry.container.clone())
             .collect();
-        containers.sort_by(|a, b| a.title.cmp(&b.title));
+        sort_artists(&mut containers);
         containers.into_iter().map(Entry::Container).collect()
     }
 
@@ -657,6 +657,23 @@ fn synthetic_artist_id(normalized_key: &str) -> ObjectId {
     ObjectId::new(format!("tag-artist:{normalized_key}"))
 }
 
+/// Sorts artists the way a record shelf does: case-insensitively, with a
+/// leading "The " ignored, so "The Beatles" sits among the "B"s instead
+/// of in one long run of "The ..." artists. Only the sort position
+/// changes; the displayed title is untouched. Ties fall back to the
+/// exact title so the order is deterministic.
+fn sort_artists(artists: &mut [Container]) {
+    artists.sort_by_cached_key(|c| (artist_sort_key(&c.title), c.title.clone()));
+}
+
+fn artist_sort_key(title: &str) -> String {
+    let lower = title.trim().to_lowercase();
+    match lower.strip_prefix("the ") {
+        Some(rest) if !rest.trim().is_empty() => rest.trim_start().to_string(),
+        _ => lower,
+    }
+}
+
 /// Sorts a container's children for display: sub-containers first, by
 /// title, then tracks by track number (numbered tracks in order,
 /// unnumbered ones after, by title). A folder holding both (an album
@@ -750,6 +767,47 @@ mod tests {
                 Entry::Item(i) => i.title.as_str(),
             })
             .collect()
+    }
+
+    fn artist(title: &str) -> Container {
+        Container {
+            id: ObjectId::new(title),
+            parent_id: None,
+            title: title.to_string(),
+            child_count: 0,
+        }
+    }
+
+    #[test]
+    fn artists_sort_ignoring_a_leading_the_and_case() {
+        let mut artists: Vec<Container> = [
+            "Radiohead",
+            "The Beatles",
+            "ac/dc",
+            "The Who",
+            "Abba",
+            "Bob Dylan",
+            "The",
+            "Theory of a Deadman",
+        ]
+        .into_iter()
+        .map(artist)
+        .collect();
+        sort_artists(&mut artists);
+        let titles: Vec<&str> = artists.iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            [
+                "Abba",
+                "ac/dc",
+                "The Beatles",
+                "Bob Dylan",
+                "Radiohead",
+                "The",
+                "Theory of a Deadman",
+                "The Who",
+            ]
+        );
     }
 
     #[test]
