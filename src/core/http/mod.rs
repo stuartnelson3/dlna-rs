@@ -195,7 +195,10 @@ impl HttpServer {
             Route::Control(service) => self.handle_control(service, req).await,
             Route::Item(id) => self.handle_item(&id, req.method(), req.headers()).await,
             Route::Art(id) => self.handle_art(&id).await,
-            Route::NotFound => not_found(),
+            Route::NotFound => {
+                log::debug!("no route for {} {}", req.method(), req.uri().path());
+                not_found()
+            }
         })
     }
 
@@ -218,13 +221,39 @@ impl HttpServer {
 
         let action = match soap::parse_action(&body) {
             Ok(action) => action,
-            Err(_) => return soap_fault_response(soap::build_fault(401, "Invalid Action")),
+            Err(err) => {
+                // The body is capped at MAX_BODY_LEN and is the client's
+                // own request, so showing a prefix is safe and is usually
+                // enough to see what a misbehaving client actually sent.
+                let snippet: String = String::from_utf8_lossy(&body).chars().take(300).collect();
+                log::warn!(
+                    "{service:?}: unparseable SOAP request ({err:?}), {} bytes: {snippet:?}",
+                    body.len()
+                );
+                return soap_fault_response(soap::build_fault(401, "Invalid Action"));
+            }
         };
+
+        // `{:?}` on purpose: Rust escapes combining characters there
+        // (a decomposed "a" + macron prints as `a\u{304}`), so a
+        // precomposed-vs-decomposed mismatch is visible in the log.
+        log::debug!(
+            "{service:?} {} {:?}",
+            action.name,
+            sorted_args(&action.arguments)
+        );
 
         let base_url = format!("http://{}:{}", self.interface_addr, self.port);
         match dispatch::handle(service, &action, self.content_source.as_ref(), &base_url) {
             Ok(body) => soap_ok_response(body),
-            Err(err) => soap_fault_response(err.into_fault()),
+            Err(err) => {
+                log::warn!(
+                    "{service:?} {} failed with {err:?}: {:?}",
+                    action.name,
+                    sorted_args(&action.arguments)
+                );
+                soap_fault_response(err.into_fault())
+            }
         }
     }
 
@@ -399,6 +428,16 @@ fn range_not_satisfiable(file_size: u64) -> Response<RespBody> {
         .header("Content-Range", format!("bytes */{file_size}"))
         .body(full_body(Bytes::new()))
         .expect("static header name/value are always valid")
+}
+
+/// Arguments in a stable order, so log lines are greppable and diffable.
+fn sorted_args(arguments: &std::collections::HashMap<String, String>) -> Vec<(&str, &str)> {
+    let mut args: Vec<(&str, &str)> = arguments
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    args.sort_unstable();
+    args
 }
 
 fn content_length(req: &Request<Incoming>) -> Option<usize> {

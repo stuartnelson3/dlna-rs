@@ -100,7 +100,12 @@ fn browse(
     // "a" plus a combining macron, depending on the client's platform, and
     // the ids this server hands out (see `music_library`'s artist key)
     // are always NFC. Numeric ids are plain ASCII and pass through as-is.
-    let object_id = ObjectId::new(arg(action, "ObjectID")?.nfc().collect::<String>());
+    let raw_id = arg(action, "ObjectID")?;
+    let normalized_id: String = raw_id.nfc().collect();
+    if normalized_id != raw_id {
+        log::debug!("ObjectID {raw_id:?} normalized to NFC {normalized_id:?}");
+    }
+    let object_id = ObjectId::new(normalized_id);
     let browse_flag = arg(action, "BrowseFlag")?;
 
     let (entries, total_matches) = match browse_flag {
