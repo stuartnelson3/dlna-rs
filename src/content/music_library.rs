@@ -616,7 +616,7 @@ fn reparent_to_root(entry: Entry) -> Entry {
 }
 
 /// `None` if no track has a non-empty value for `field`, or if two
-/// tracks disagree (case/whitespace-folded). A missing tag is a
+/// tracks disagree (case/whitespace/Unicode-normalization-folded). A missing tag is a
 /// non-vote, not a disagreement - deliberately conservative: a real
 /// compilation folder (inconsistent artist tags) falls back to
 /// folder-based grouping rather than guessing. See this module's doc
@@ -631,7 +631,9 @@ fn consistent_tag_value<'a>(
         let Some(raw) = field(item).map(str::trim).filter(|s| !s.is_empty()) else {
             continue;
         };
-        let key = raw.to_lowercase();
+        // The same key the artist id is built from, so tracks that
+        // spell a name precomposed vs. decomposed agree with each other.
+        let key = normalize_artist_key(raw);
         match &normalized_key {
             None => {
                 normalized_key = Some(key);
@@ -659,8 +661,28 @@ fn normalize_artist_key(raw: &str) -> String {
 /// needs its own id - a plain non-numeric string, which can never
 /// collide with a real `Index`-allocated id (always a plain integer
 /// string; see `IndexBuilder`'s `next_id`, `src/index.rs`).
+///
+/// The key is percent-encoded so the id is pure ASCII. Real regression:
+/// a client re-encoded the UTF-8 bytes of "bārān" as Mac Roman text
+/// ("bƒÅrƒÅn") when sending the id back, so a non-ASCII id never matched
+/// and the artist couldn't be opened. Nothing non-ASCII means nothing for
+/// a client to mangle; the display title never goes through this.
 fn synthetic_artist_id(normalized_key: &str) -> ObjectId {
-    ObjectId::new(format!("tag-artist:{normalized_key}"))
+    ObjectId::new(format!("tag-artist:{}", percent_encode(normalized_key)))
+}
+
+/// Keeps ASCII letters, digits, and `-._`; every other byte becomes `%XX`.
+/// Injective (`%` itself is encoded), so distinct keys never share an id.
+fn percent_encode(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_') {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
 }
 
 /// Sorts artists the way a record shelf does: case-insensitively, with a
@@ -782,6 +804,21 @@ mod tests {
             title: title.to_string(),
             child_count: 0,
         }
+    }
+
+    #[test]
+    fn synthetic_artist_ids_are_pure_ascii_and_distinct() {
+        let id = synthetic_artist_id(&normalize_artist_key("B\u{101}r\u{101}n feat. Run Rivers"));
+        assert!(id.as_str().is_ascii(), "{id:?}");
+        assert_eq!(
+            id.as_str(),
+            "tag-artist:b%C4%81r%C4%81n%20feat.%20run%20rivers"
+        );
+        // '%' itself is encoded, so a literal "%C4" can't collide with "Ä".
+        assert_ne!(
+            synthetic_artist_id("%c4%81"),
+            synthetic_artist_id("\u{101}")
+        );
     }
 
     #[test]

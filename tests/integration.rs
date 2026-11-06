@@ -781,7 +781,12 @@ async fn browsing_into_a_tag_artist_whose_name_contains_an_ampersand_works_over_
         "expected the artist in the listing: {artists_didl}"
     );
     let artist_id = extract_attr(&artists_didl, "container", "id");
-    assert_eq!(artist_id, "artists$tag-artist:danger mouse & black thought");
+    // Percent-encoded and pure ASCII, so no client can mangle it (see
+    // `music_library::synthetic_artist_id`).
+    assert_eq!(
+        artist_id,
+        "artists$tag-artist:danger%20mouse%20%26%20black%20thought"
+    );
 
     let client = reqwest::Client::new();
     let response = client
