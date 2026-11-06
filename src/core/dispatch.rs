@@ -5,6 +5,8 @@
 //! that gets wrapped as SOAP XML is `core::soap`'s job, kept separate so
 //! this module reads as business logic, not string templating.
 
+use unicode_normalization::UnicodeNormalization;
+
 use crate::core::content_source::ContentSource;
 use crate::core::device::ServiceType;
 use crate::core::{didl, soap};
@@ -94,7 +96,11 @@ fn browse(
     source: &dyn ContentSource,
     base_url: &str,
 ) -> Result<String, DispatchError> {
-    let object_id = ObjectId::new(arg(action, "ObjectID")?);
+    // NFC-normalized before lookup: "ā" can arrive as one character or as
+    // "a" plus a combining macron, depending on the client's platform, and
+    // the ids this server hands out (see `music_library`'s artist key)
+    // are always NFC. Numeric ids are plain ASCII and pass through as-is.
+    let object_id = ObjectId::new(arg(action, "ObjectID")?.nfc().collect::<String>());
     let browse_flag = arg(action, "BrowseFlag")?;
 
     let (entries, total_matches) = match browse_flag {
@@ -253,6 +259,51 @@ mod tests {
             SystemTime::UNIX_EPOCH,
         );
         FolderMirror::new(SharedIndex::new(builder.build()))
+    }
+
+    #[test]
+    fn browse_accepts_a_decomposed_unicode_artist_id() {
+        use crate::config::{LibraryConfig, View};
+        use crate::content::composite::CompositeContentSource;
+
+        let mut builder = IndexBuilder::new();
+        let album = builder.add_container(&ObjectId::root(), "Album".to_string());
+        builder.add_item_with_tags(
+            &album,
+            "t.mp3".to_string(),
+            PathBuf::from("/m/t.mp3"),
+            1,
+            SystemTime::UNIX_EPOCH,
+            crate::index::TrackTags {
+                artist: Some("B\u{101}r\u{101}n".to_string()),
+                ..Default::default()
+            },
+        );
+        let library = LibraryConfig {
+            views: vec![View::Artists],
+            ..Default::default()
+        };
+        let source =
+            CompositeContentSource::from_config(&library, SharedIndex::new(builder.build()));
+
+        // Precomposed (what the server hands out) and decomposed (what a
+        // client that normalizes to NFD sends back) must both resolve.
+        for id in [
+            "artists$tag-artist:b\u{101}r\u{101}n",
+            "artists$tag-artist:ba\u{304}ra\u{304}n",
+        ] {
+            let action = action(
+                "Browse",
+                &[("ObjectID", id), ("BrowseFlag", "BrowseDirectChildren")],
+            );
+            let result = handle(
+                ServiceType::ContentDirectory,
+                &action,
+                &source,
+                "http://h:1",
+            );
+            assert!(result.is_ok(), "{id:?} should resolve: {result:?}");
+        }
     }
 
     #[test]

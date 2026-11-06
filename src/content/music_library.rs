@@ -27,6 +27,8 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, SystemTime};
 
+use unicode_normalization::UnicodeNormalization;
+
 use crate::core::content_source::ContentSource;
 use crate::index::{Container, Entry, Item, ObjectId, SharedIndex};
 
@@ -646,7 +648,11 @@ fn consistent_tag_value<'a>(
 /// lower-cased, so "AC/DC" and " ac/dc " group as the same artist. The
 /// *display* title never goes through this; see `snapshot()`.
 fn normalize_artist_key(raw: &str) -> String {
-    raw.trim().to_lowercase()
+    // NFC first, so the same name stored precomposed in one file's tag
+    // and decomposed in another's still groups as one artist, and so the
+    // id built from this key matches what dispatch's NFC-normalized
+    // lookup sends in.
+    raw.trim().nfc().collect::<String>().to_lowercase()
 }
 
 /// A tag-derived artist has no backing real `Index` container, so it
@@ -776,6 +782,14 @@ mod tests {
             title: title.to_string(),
             child_count: 0,
         }
+    }
+
+    #[test]
+    fn artist_key_treats_precomposed_and_decomposed_names_as_equal() {
+        assert_eq!(
+            normalize_artist_key("B\u{101}r\u{101}n"),
+            normalize_artist_key("Ba\u{304}ra\u{304}n")
+        );
     }
 
     #[test]
