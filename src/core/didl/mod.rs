@@ -244,6 +244,7 @@ mod tests {
             size: 1,
             modified: SystemTime::UNIX_EPOCH,
             artist: None,
+            album_artist: None,
             album: None,
             genre: None,
             track_number: None,
@@ -275,6 +276,7 @@ mod tests {
     fn renders_real_tags_and_cover_art_when_present() {
         let entry = item_with_tags(crate::index::TrackTags {
             artist: Some("Test Artist".to_string()),
+            album_artist: None,
             album: Some("Test Album".to_string()),
             genre: Some("Test Genre".to_string()),
             track_number: None,

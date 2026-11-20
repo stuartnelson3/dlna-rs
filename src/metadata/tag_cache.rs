@@ -36,13 +36,20 @@ use crate::core::metadata_provider::{Metadata, MetadataProvider};
 
 const TABLE: TableDefinition<&str, &str> = TableDefinition::new("tags");
 
+/// Bumped whenever a new field is added, so entries written by an older
+/// build (which lack it) are re-read instead of served with the field
+/// silently empty.
+const CACHE_SCHEMA: u32 = 2;
+
 #[derive(Serialize, Deserialize)]
 struct CachedTags {
+    schema: u32,
     size: u64,
     modified_unix_nanos: u128,
     title: String,
     track_number: Option<u32>,
     artist: Option<String>,
+    album_artist: Option<String>,
     album: Option<String>,
     genre: Option<String>,
     has_art: bool,
@@ -72,7 +79,10 @@ impl<P: MetadataProvider> CachedTagMetadata<P> {
         let table = read_txn.open_table(TABLE).ok()?;
         let guard = table.get(key).ok()??;
         let cached: CachedTags = serde_json::from_str(guard.value()).ok()?;
-        (cached.size == size && cached.modified_unix_nanos == modified_unix_nanos).then_some(cached)
+        (cached.schema == CACHE_SCHEMA
+            && cached.size == size
+            && cached.modified_unix_nanos == modified_unix_nanos)
+            .then_some(cached)
     }
 
     fn store(&self, key: &str, cached: &CachedTags) {
@@ -124,6 +134,7 @@ impl<P: MetadataProvider> MetadataProvider for CachedTagMetadata<P> {
                 title: cached.title,
                 track_number: cached.track_number,
                 artist: cached.artist,
+                album_artist: cached.album_artist,
                 album: cached.album,
                 genre: cached.genre,
                 has_art: cached.has_art,
@@ -139,11 +150,13 @@ impl<P: MetadataProvider> MetadataProvider for CachedTagMetadata<P> {
         self.store(
             &key,
             &CachedTags {
+                schema: CACHE_SCHEMA,
                 size: stat.len(),
                 modified_unix_nanos,
                 title: fresh.title.clone(),
                 track_number: fresh.track_number,
                 artist: fresh.artist.clone(),
+                album_artist: fresh.album_artist.clone(),
                 album: fresh.album.clone(),
                 genre: fresh.genre.clone(),
                 has_art: fresh.has_art,
@@ -261,6 +274,34 @@ mod tests {
 
     fn cache_at(dir: &Path, inner: CountingProvider) -> CachedTagMetadata<CountingProvider> {
         CachedTagMetadata::open(&dir.join("cache.redb"), inner).unwrap()
+    }
+
+    #[test]
+    fn an_entry_written_before_album_artist_existed_is_re_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let track = dir.path().join("track.mp3");
+        std::fs::write(&track, b"content").unwrap();
+        let cache = cache_at(dir.path(), CountingProvider::new("Artist"));
+
+        // An old-format entry: valid JSON, but no `schema` field.
+        let stat = std::fs::metadata(&track).unwrap();
+        let nanos = unix_nanos(stat.modified().ok()).unwrap();
+        let old = format!(
+            r#"{{"size":{},"modified_unix_nanos":{nanos},"title":"t","track_number":null,"artist":"Old","album":null,"genre":null,"has_art":false,"duration_millis":null,"bitrate":null,"sample_rate":null,"bits_per_sample":null,"channels":null}}"#,
+            stat.len()
+        );
+        let txn = cache.db.begin_write().unwrap();
+        {
+            let mut table = txn.open_table(TABLE).unwrap();
+            table
+                .insert(track.to_string_lossy().as_ref(), old.as_str())
+                .unwrap();
+        }
+        txn.commit().unwrap();
+
+        let metadata = cache.metadata(&track);
+        assert_eq!(cache.inner.call_count(), 1, "stale-schema entry must miss");
+        assert_eq!(metadata.artist.as_deref(), Some("Artist"));
     }
 
     #[test]

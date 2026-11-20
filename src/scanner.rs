@@ -84,6 +84,7 @@ fn scan_one_directory(
             let read = tags.metadata(entry.path());
             let track_tags = TrackTags {
                 artist: read.artist,
+                album_artist: read.album_artist,
                 album: read.album,
                 genre: read.genre,
                 track_number: read.track_number,

@@ -13,7 +13,7 @@ use std::pin::Pin;
 use bytes::Bytes;
 use lofty::file::{AudioFile, TaggedFile, TaggedFileExt};
 use lofty::picture::{MimeType, PictureType};
-use lofty::tag::{Accessor, Tag};
+use lofty::tag::{Accessor, ItemKey, Tag};
 
 use crate::core::art_source::{Art, ArtSource};
 use crate::core::metadata_provider::{Metadata, MetadataProvider};
@@ -104,6 +104,10 @@ impl MetadataProvider for TagMetadata {
                 .as_ref()
                 .and_then(Accessor::artist)
                 .map(|s| s.into_owned()),
+            album_artist: tag
+                .as_ref()
+                .and_then(|t| t.get_string(ItemKey::AlbumArtist))
+                .map(str::to_string),
             album: tag
                 .as_ref()
                 .and_then(Accessor::album)
@@ -258,6 +262,17 @@ mod tests {
     /// against a real configured media directory.
     fn tags_for(dir: &tempfile::TempDir) -> TagMetadata {
         TagMetadata::new(vec![dir.path().to_path_buf()])
+    }
+
+    #[test]
+    fn reads_the_album_artist_separately_from_the_track_artist() {
+        let (dir, path) = fixture_with(|tag| {
+            tag.set_artist("SEED Ensemble; Xana".to_string());
+            tag.insert_text(ItemKey::AlbumArtist, "SEED Ensemble".to_string());
+        });
+        let metadata = tags_for(&dir).metadata(&path);
+        assert_eq!(metadata.artist.as_deref(), Some("SEED Ensemble; Xana"));
+        assert_eq!(metadata.album_artist.as_deref(), Some("SEED Ensemble"));
     }
 
     #[test]

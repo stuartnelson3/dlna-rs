@@ -82,6 +82,7 @@ pub struct Item {
     pub size: u64,
     pub modified: SystemTime,
     pub artist: Option<String>,
+    pub album_artist: Option<String>,
     pub album: Option<String>,
     pub genre: Option<String>,
     pub track_number: Option<u32>,
@@ -101,6 +102,7 @@ pub struct Item {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TrackTags {
     pub artist: Option<String>,
+    pub album_artist: Option<String>,
     pub album: Option<String>,
     pub genre: Option<String>,
     pub track_number: Option<u32>,
@@ -182,6 +184,7 @@ impl Index {
                 size: *size,
                 modified: *modified,
                 artist: tags.artist.clone(),
+                album_artist: tags.album_artist.clone(),
                 album: tags.album.clone(),
                 genre: tags.genre.clone(),
                 track_number: tags.track_number,

@@ -20,6 +20,9 @@ pub struct Metadata {
     pub title: String,
     pub track_number: Option<u32>,
     pub artist: Option<String>,
+    /// The album-level artist (`ALBUMARTIST`), consistent across an
+    /// album even when per-track `artist` varies ("feat." credits).
+    pub album_artist: Option<String>,
     pub album: Option<String>,
     pub genre: Option<String>,
     pub has_art: bool,

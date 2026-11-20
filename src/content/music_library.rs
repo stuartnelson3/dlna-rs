@@ -141,7 +141,7 @@ impl MusicLibraryView {
     ) -> HashMap<ObjectId, Resolved> {
         let tag_artist_keys: HashSet<String> = by_album
             .values()
-            .filter_map(|tracks| consistent_tag_value(tracks, |i| i.artist.as_deref()))
+            .filter_map(|tracks| album_artist_name(tracks))
             .map(|name| normalize_artist_key(&name))
             .collect();
 
@@ -152,14 +152,13 @@ impl MusicLibraryView {
             };
             let display_title = consistent_tag_value(tracks, |i| i.album.as_deref())
                 .unwrap_or_else(|| real_container.title.clone());
-            let (artist_key, artist_raw_name) =
-                match consistent_tag_value(tracks, |i| i.artist.as_deref()) {
-                    Some(name) => (
-                        Some(ArtistKey::Tag(normalize_artist_key(&name))),
-                        Some(name),
-                    ),
-                    None => self.folder_artist_key(&real_container, &tag_artist_keys),
-                };
+            let (artist_key, artist_raw_name) = match album_artist_name(tracks) {
+                Some(name) => (
+                    Some(ArtistKey::Tag(normalize_artist_key(&name))),
+                    Some(name),
+                ),
+                None => self.folder_artist_key(&real_container, &tag_artist_keys),
+            };
             resolved.insert(
                 album_id.clone(),
                 Resolved {
@@ -646,6 +645,16 @@ fn consistent_tag_value<'a>(
     chosen.map(str::to_string)
 }
 
+/// The artist an album groups under, from its tracks' tags: the
+/// consistent `ALBUMARTIST` if there is one, else the consistent
+/// per-track `ARTIST`. `ALBUMARTIST` wins because it is the tag meant
+/// for this: per-track `ARTIST` varies on any album with "feat." credits
+/// (`SEED Ensemble; Xana`) even though the album has one artist.
+fn album_artist_name(tracks: &[Item]) -> Option<String> {
+    consistent_tag_value(tracks, |i| i.album_artist.as_deref())
+        .or_else(|| consistent_tag_value(tracks, |i| i.artist.as_deref()))
+}
+
 /// The comparison/dedup key for a tag artist name - trimmed and
 /// lower-cased, so "AC/DC" and " ac/dc " group as the same artist. The
 /// *display* title never goes through this; see `snapshot()`.
@@ -1095,6 +1104,53 @@ mod tests {
         assert_eq!(
             artists_view.children(&ObjectId::root()).unwrap(),
             Vec::new()
+        );
+    }
+
+    #[test]
+    fn album_artist_groups_an_album_whose_track_artists_carry_feat_credits() {
+        // Real regression: "SEED Ensemble - Driftglass" sits directly in
+        // the media root. Three tracks have ARTIST "SEED Ensemble; <guest>",
+        // so the per-track artist tags disagree, but ALBUMARTIST is
+        // "SEED Ensemble" on every track. The artist must still appear.
+        let mut builder = IndexBuilder::new();
+        let folder = builder.add_container(
+            &ObjectId::root(),
+            "SEED Ensemble - Driftglass (2019) [WEB FLAC]".to_string(),
+        );
+        for (n, artist) in [
+            "SEED Ensemble",
+            "SEED Ensemble; Xana",
+            "SEED Ensemble",
+            "SEED Ensemble; Mr Ekow",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            builder.add_item_with_tags(
+                &folder,
+                format!("0{n}.flac"),
+                PathBuf::from(format!("/m/seed/0{n}.flac")),
+                1,
+                SystemTime::UNIX_EPOCH,
+                TrackTags {
+                    artist: Some(artist.to_string()),
+                    album_artist: Some("SEED Ensemble".to_string()),
+                    album: Some("Driftglass".to_string()),
+                    ..Default::default()
+                },
+            );
+        }
+
+        let view = MusicLibraryView::new(SharedIndex::new(builder.build()), Mode::Artists);
+        let artists = view.children(&ObjectId::root()).unwrap();
+        assert_eq!(titles(&artists), vec!["SEED Ensemble"]);
+        let Entry::Container(artist) = &artists[0] else {
+            panic!("expected a container");
+        };
+        assert_eq!(
+            titles(&view.children(&artist.id).unwrap()),
+            vec!["Driftglass"]
         );
     }
 
