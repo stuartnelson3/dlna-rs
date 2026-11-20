@@ -12,7 +12,7 @@
 //! either leaking storage details outward or re-deriving a "view" shape
 //! every time something reads the index.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -137,6 +137,10 @@ enum NodeKind {
 #[derive(Debug, Default)]
 pub struct Index {
     nodes: HashMap<ObjectId, Node>,
+    /// The container for each configured media directory. These are
+    /// folders the user chose as library roots, not folders that name an
+    /// artist or an album.
+    media_roots: HashSet<ObjectId>,
 }
 
 impl Index {
@@ -216,6 +220,11 @@ impl Index {
             .collect()
     }
 
+    /// True if `id` is the container of a configured media directory.
+    pub fn is_media_root(&self, id: &ObjectId) -> bool {
+        self.media_roots.contains(id)
+    }
+
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
@@ -249,7 +258,10 @@ impl IndexBuilder {
             },
         );
         IndexBuilder {
-            index: Index { nodes },
+            index: Index {
+                nodes,
+                media_roots: HashSet::new(),
+            },
             next_id: 1,
         }
     }
@@ -262,6 +274,14 @@ impl IndexBuilder {
         self.insert(parent, title, |_| NodeKind::Container {
             children: Vec::new(),
         })
+    }
+
+    /// Adds the container for a configured media directory, directly
+    /// under the root, and records that it is a media directory.
+    pub fn add_media_root(&mut self, title: String) -> ObjectId {
+        let id = self.add_container(&ObjectId::root(), title);
+        self.index.media_roots.insert(id.clone());
+        id
     }
 
     pub fn add_item(
@@ -366,6 +386,13 @@ impl SharedIndex {
 
     pub fn entry(&self, id: &ObjectId) -> Option<Entry> {
         self.0.read().expect("index lock poisoned").entry(id)
+    }
+
+    pub fn is_media_root(&self, id: &ObjectId) -> bool {
+        self.0
+            .read()
+            .expect("index lock poisoned")
+            .is_media_root(id)
     }
 }
 

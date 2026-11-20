@@ -186,7 +186,9 @@ impl MusicLibraryView {
         let parent = album_container
             .parent_id
             .clone()
-            .filter(|parent| *parent != ObjectId::root());
+            // A media directory is the library's root, not an artist: an
+            // album folder directly inside it has no artist folder above.
+            .filter(|parent| *parent != ObjectId::root() && !self.index.is_media_root(parent));
         let parent_title = parent
             .as_ref()
             .and_then(|id| self.index.entry(id))
@@ -1105,6 +1107,41 @@ mod tests {
             artists_view.children(&ObjectId::root()).unwrap(),
             Vec::new()
         );
+    }
+
+    #[test]
+    fn a_flat_album_with_mixed_artist_tags_is_not_filed_under_the_media_directory() {
+        // Real regression: the scanner puts each configured media
+        // directory ("music") directly under the index root. A flat album
+        // folder inside it, whose tracks disagree on artist, used to fall
+        // back to "music" as its artist.
+        let mut builder = IndexBuilder::new();
+        let music = builder.add_media_root("music".to_string());
+        let album = builder.add_container(&music, "Soundtrack".to_string());
+        tagged_item(
+            &mut builder,
+            &album,
+            "01.mp3",
+            "/m/s/01.mp3",
+            Some("A"),
+            None,
+        );
+        tagged_item(
+            &mut builder,
+            &album,
+            "02.mp3",
+            "/m/s/02.mp3",
+            Some("B"),
+            None,
+        );
+        // A real Artist/Album tree inside the same media directory still works.
+        let artist = builder.add_container(&music, "Real Artist".to_string());
+        let nested = builder.add_container(&artist, "Nested".to_string());
+        tagged_item(&mut builder, &nested, "01.mp3", "/m/r/01.mp3", None, None);
+
+        let view = MusicLibraryView::new(SharedIndex::new(builder.build()), Mode::Artists);
+        let artists = view.children(&ObjectId::root()).unwrap();
+        assert_eq!(titles(&artists), vec!["Real Artist"]);
     }
 
     #[test]

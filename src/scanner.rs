@@ -69,7 +69,11 @@ fn scan_one_directory(
             .unwrap_or_else(|| entry.file_name().to_string_lossy().into_owned());
 
         if entry.file_type().is_dir() {
-            let id = builder.add_container(&parent, title);
+            let id = if depth == 0 {
+                builder.add_media_root(title)
+            } else {
+                builder.add_container(&parent, title)
+            };
             container_at_depth.truncate(depth);
             container_at_depth.push(id);
         } else if entry.file_type().is_file()
@@ -227,8 +231,10 @@ mod tests {
 
         let top = container_named(&index, &ObjectId::root(), &top_level_name(&f.root)).unwrap();
         assert_eq!(top.child_count, 1);
+        assert!(index.is_media_root(&top.id), "the configured directory");
 
         let artist = container_named(&index, &top.id, "Artist").unwrap();
+        assert!(!index.is_media_root(&artist.id), "a folder inside it");
         assert_eq!(artist.child_count, 1);
 
         let album = container_named(&index, &artist.id, "Album").unwrap();
