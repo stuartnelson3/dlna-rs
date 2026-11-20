@@ -4,6 +4,68 @@ use std::time::Duration;
 
 use serde::Deserialize;
 
+/// Reads a duration written as text, such as `"15m"` or `"1h 30m"`. See
+/// [`parse_duration`] for the accepted forms.
+fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let text = String::deserialize(deserializer)?;
+    parse_duration(&text).map_err(serde::de::Error::custom)
+}
+
+/// Parses one or more `<number><unit>` terms, with optional spaces
+/// between them, and adds them up: `"15m"`, `"90s"`, `"1h 30m"`.
+///
+/// The units are `ms`, `s`, `m`, `h`, `d` and `w`, plus the long forms
+/// (`seconds`, `minutes`, `hours`, `days`, `weeks`). Fractions, negative
+/// numbers, a number with no unit and an empty string are errors.
+fn parse_duration(text: &str) -> Result<Duration, String> {
+    let bad = |why: &str| {
+        format!("invalid duration {text:?}: {why} (examples: \"15m\", \"4h\", \"1h 30m\")")
+    };
+    let mut rest = text.trim();
+    if rest.is_empty() {
+        return Err(bad("it is empty"));
+    }
+    let mut total = Duration::ZERO;
+    while !rest.is_empty() {
+        let digits_end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if digits_end == 0 {
+            return Err(bad("expected a number"));
+        }
+        let number: u64 = rest[..digits_end]
+            .parse()
+            .map_err(|_| bad("the number is too large"))?;
+        rest = rest[digits_end..].trim_start();
+        let unit_end = rest
+            .find(|c: char| !c.is_ascii_alphabetic())
+            .unwrap_or(rest.len());
+        let term = match &rest[..unit_end] {
+            "ms" | "msec" | "millisecond" | "milliseconds" => Some(Duration::from_millis(number)),
+            "s" | "sec" | "secs" | "second" | "seconds" => Some(Duration::from_secs(number)),
+            "m" | "min" | "mins" | "minute" | "minutes" => {
+                number.checked_mul(60).map(Duration::from_secs)
+            }
+            "h" | "hr" | "hrs" | "hour" | "hours" => {
+                number.checked_mul(3600).map(Duration::from_secs)
+            }
+            "d" | "day" | "days" => number.checked_mul(86_400).map(Duration::from_secs),
+            "w" | "week" | "weeks" => number.checked_mul(604_800).map(Duration::from_secs),
+            "" => return Err(bad("a number needs a unit")),
+            _ => return Err(bad("unknown unit")),
+        };
+        let term = term.ok_or_else(|| bad("the number is too large"))?;
+        total = total
+            .checked_add(term)
+            .ok_or_else(|| bad("the total is too large"))?;
+        rest = rest[unit_end..].trim_start();
+    }
+    Ok(total)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -40,7 +102,7 @@ pub struct SsdpConfig {
     /// every advertisement is derived from this (twice the interval), so a
     /// single missed announcement doesn't cause premature expiry on a
     /// control point.
-    #[serde(with = "humantime_serde")]
+    #[serde(deserialize_with = "deserialize_duration")]
     pub notify_interval: Duration,
 }
 
@@ -146,7 +208,7 @@ impl Default for RecentlyAddedConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct RescanConfig {
-    #[serde(with = "humantime_serde")]
+    #[serde(deserialize_with = "deserialize_duration")]
     pub interval: Duration,
     pub on_startup: bool,
 }
@@ -319,6 +381,53 @@ mod tests {
             { path = "/srv/media/music", kind = "audio" },
         ]
     "#;
+
+    #[test]
+    fn parses_durations_in_the_forms_the_config_uses() {
+        let secs = Duration::from_secs;
+        assert_eq!(parse_duration("15m"), Ok(secs(900)));
+        assert_eq!(parse_duration("4h"), Ok(secs(4 * 3600)));
+        assert_eq!(parse_duration("90s"), Ok(secs(90)));
+        assert_eq!(parse_duration("1h 30m"), Ok(secs(5400)));
+        assert_eq!(parse_duration("1h30m"), Ok(secs(5400)));
+        assert_eq!(parse_duration(" 2 days "), Ok(secs(2 * 86_400)));
+        assert_eq!(parse_duration("1w"), Ok(secs(604_800)));
+        assert_eq!(parse_duration("500ms"), Ok(Duration::from_millis(500)));
+        assert_eq!(parse_duration("0s"), Ok(Duration::ZERO));
+    }
+
+    #[test]
+    fn rejects_bad_durations_with_a_message_that_names_the_value() {
+        for bad in [
+            "",
+            "   ",
+            "15",
+            "m",
+            "1.5h",
+            "-5m",
+            "5 parsecs",
+            "1h x",
+            "99999999999999999999s",
+            "18446744073709551615w",
+        ] {
+            let err = parse_duration(bad).unwrap_err();
+            assert!(err.contains("invalid duration"), "{bad:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_bad_duration_in_the_config_file_fails_loading() {
+        let (_dir, path) = write_config(&format!("{MINIMAL}\n[rescan]\ninterval = \"soon\"\n"));
+        let err = Config::load(&path).unwrap_err().to_string();
+        assert!(err.contains("invalid duration"), "{err}");
+    }
+
+    #[test]
+    fn loads_a_duration_written_as_hours_and_minutes() {
+        let (_dir, path) = write_config(&format!("{MINIMAL}\n[rescan]\ninterval = \"1h 30m\"\n"));
+        let config = Config::load(&path).unwrap();
+        assert_eq!(config.rescan.interval, Duration::from_secs(5400));
+    }
 
     #[test]
     fn loads_minimal_config_with_defaults() {
