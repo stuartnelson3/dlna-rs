@@ -647,14 +647,35 @@ fn consistent_tag_value<'a>(
     chosen.map(str::to_string)
 }
 
-/// The artist an album groups under, from its tracks' tags: the
-/// consistent `ALBUMARTIST` if there is one, else the consistent
-/// per-track `ARTIST`. `ALBUMARTIST` wins because it is the tag meant
-/// for this: per-track `ARTIST` varies on any album with "feat." credits
-/// (`SEED Ensemble; Xana`) even though the album has one artist.
+/// The artist an album groups under, from its tracks' tags. In order:
+///
+/// 1. the consistent `ALBUMARTIST`, the tag meant for this;
+/// 2. the consistent per-track `ARTIST`;
+/// 3. the consistent lead artist of each track's `ARTIST`, for an album
+///    whose tracks add guests (`Band`, `Band; Guest`) and has no
+///    `ALBUMARTIST`.
 fn album_artist_name(tracks: &[Item]) -> Option<String> {
     consistent_tag_value(tracks, |i| i.album_artist.as_deref())
         .or_else(|| consistent_tag_value(tracks, |i| i.artist.as_deref()))
+        .or_else(|| consistent_tag_value(tracks, |i| i.artist.as_deref().map(lead_artist)))
+}
+
+/// The first artist in a credit: the text before the first `;` or the
+/// first " feat.", " ft." or " featuring ". It does not split on `&`,
+/// `,` or `/`, because real names contain them ("Earth, Wind & Fire",
+/// "AC/DC") and a wrong split would merge different artists.
+fn lead_artist(credit: &str) -> &str {
+    let lower = credit.to_lowercase();
+    let cut = [";", " feat.", " ft.", " featuring "]
+        .iter()
+        .filter_map(|marker| lower.find(marker))
+        .min();
+    // `to_lowercase` can change byte lengths for some characters, so
+    // only trust the offset if it is a real boundary in `credit`.
+    match cut.and_then(|at| credit.get(..at)) {
+        Some(lead) if !lead.trim().is_empty() => lead.trim(),
+        _ => credit,
+    }
 }
 
 /// The comparison/dedup key for a tag artist name - trimmed and
@@ -1107,6 +1128,60 @@ mod tests {
             artists_view.children(&ObjectId::root()).unwrap(),
             Vec::new()
         );
+    }
+
+    #[test]
+    fn lead_artist_splits_only_on_guest_markers() {
+        assert_eq!(lead_artist("SEED Ensemble; Xana"), "SEED Ensemble");
+        assert_eq!(lead_artist("Band feat. Guest"), "Band");
+        assert_eq!(lead_artist("Band Ft. Guest"), "Band");
+        assert_eq!(lead_artist("Band featuring Guest"), "Band");
+        assert_eq!(lead_artist("Earth, Wind & Fire"), "Earth, Wind & Fire");
+        assert_eq!(lead_artist("AC/DC"), "AC/DC");
+        assert_eq!(lead_artist("Soft Machine"), "Soft Machine");
+        assert_eq!(lead_artist("; Guest"), "; Guest", "no lead: keep it whole");
+    }
+
+    #[test]
+    fn guest_credits_without_an_album_artist_still_group_under_the_lead_artist() {
+        let mut builder = IndexBuilder::new();
+        let music = builder.add_media_root("music".to_string());
+        let folder = builder.add_container(&music, "Band - Album".to_string());
+        for (n, artist) in ["Band", "Band; Guest", "Band feat. Other"]
+            .iter()
+            .enumerate()
+        {
+            tagged_item(
+                &mut builder,
+                &folder,
+                &format!("0{n}.mp3"),
+                &format!("/m/b/0{n}.mp3"),
+                Some(artist),
+                None,
+            );
+        }
+        let view = MusicLibraryView::new(SharedIndex::new(builder.build()), Mode::Artists);
+        let artists = view.children(&ObjectId::root()).unwrap();
+        assert_eq!(titles(&artists), vec!["Band"]);
+    }
+
+    #[test]
+    fn different_lead_artists_still_count_as_a_compilation() {
+        let mut builder = IndexBuilder::new();
+        let music = builder.add_media_root("music".to_string());
+        let folder = builder.add_container(&music, "Mix".to_string());
+        for (n, artist) in ["One; Guest", "Two"].iter().enumerate() {
+            tagged_item(
+                &mut builder,
+                &folder,
+                &format!("0{n}.mp3"),
+                &format!("/m/x/0{n}.mp3"),
+                Some(artist),
+                None,
+            );
+        }
+        let view = MusicLibraryView::new(SharedIndex::new(builder.build()), Mode::Artists);
+        assert_eq!(view.children(&ObjectId::root()).unwrap(), Vec::new());
     }
 
     #[test]
