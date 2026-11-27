@@ -70,7 +70,7 @@ fn scan_one_directory(
 
         if entry.file_type().is_dir() {
             let id = if depth == 0 {
-                builder.add_media_root(title)
+                builder.add_media_root(path, title)
             } else {
                 builder.add_container(&parent, title)
             };
@@ -400,6 +400,78 @@ mod tests {
 
         let root_children = index.children(&ObjectId::root()).unwrap();
         assert_eq!(root_children.len(), 2);
+    }
+
+    /// Every entry's ID, keyed by its chain of titles from the root.
+    fn ids_by_title_path(index: &Index) -> std::collections::BTreeMap<String, ObjectId> {
+        let mut ids = std::collections::BTreeMap::new();
+        let mut stack = vec![(String::new(), ObjectId::root())];
+        while let Some((path, id)) = stack.pop() {
+            for child in index.children(&id).unwrap_or_default() {
+                let title = match &child {
+                    Entry::Container(c) => &c.title,
+                    Entry::Item(i) => &i.title,
+                };
+                let child_path = format!("{path}/{title}");
+                stack.push((child_path.clone(), child.id().clone()));
+                ids.insert(child_path, child.id().clone());
+            }
+        }
+        ids
+    }
+
+    /// A client keeps stream URLs, which hold IDs, across a rescan. Each
+    /// scan here starts from nothing, so this also covers a restart.
+    #[test]
+    fn adding_a_track_does_not_change_the_id_of_any_existing_entry() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        for root in [first.path(), second.path()] {
+            fs::create_dir_all(root.join("Artist/Album")).unwrap();
+            fs::write(root.join("Artist/Album/01 - One.flac"), b"").unwrap();
+            fs::write(root.join("Artist/Album/02 - bārān.flac"), b"").unwrap();
+        }
+        let mut config = media_config(first.path(), &[]);
+        config.directories.push(MediaDirectory {
+            path: second.path().to_path_buf(),
+            kind: MediaKind::Audio,
+        });
+
+        let before = ids_by_title_path(&scan(&config, &FilenameMetadata));
+        fs::write(first.path().join("Artist/Album/03 - New.flac"), b"").unwrap();
+        let after = ids_by_title_path(&scan(&config, &FilenameMetadata));
+
+        assert_eq!(after.len(), before.len() + 1);
+        let changed: Vec<_> = before
+            .iter()
+            .filter(|(path, id)| after.get(*path) != Some(*id))
+            .map(|(path, id)| (path, id, after.get(path)))
+            .collect();
+        assert!(changed.is_empty(), "IDs changed: {changed:#?}");
+        assert!(after.values().all(|id| id.as_str().is_ascii()));
+    }
+
+    #[test]
+    fn nested_media_directories_give_a_shared_file_two_ids() {
+        let outer = tempfile::tempdir().unwrap();
+        let inner = outer.path().join("jazz");
+        fs::create_dir(&inner).unwrap();
+        fs::write(inner.join("song.flac"), b"").unwrap();
+        let mut config = media_config(outer.path(), &[]);
+        config.directories.push(MediaDirectory {
+            path: inner,
+            kind: MediaKind::Audio,
+        });
+
+        let ids = ids_by_title_path(&scan(&config, &FilenameMetadata));
+        let songs: Vec<&ObjectId> = ids
+            .iter()
+            .filter(|(path, _)| path.ends_with("/song"))
+            .map(|(_, id)| id)
+            .collect();
+
+        assert_eq!(songs.len(), 2);
+        assert_ne!(songs[0], songs[1]);
     }
 
     #[test]

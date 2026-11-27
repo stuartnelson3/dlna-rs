@@ -4,10 +4,8 @@
 //! from scratch and swaps it in wholesale (`SharedIndex::replace`) rather
 //! than incrementally patching the old one — simpler, and matches "MVP:
 //! in-memory index, rebuilt on scan" from the private planning notes.
-//! Object IDs are reassigned each rescan as a result; nothing currently
-//! depends on an ID staying stable across rescans (Browse is always a
-//! fresh round-trip), so this is an accepted MVP tradeoff, not an
-//! oversight.
+//! An object ID depends only on where a file is, so a stream URL that a
+//! client holds stays valid across a rescan - see `index::IndexBuilder`.
 
 use std::path::PathBuf;
 use std::sync::Arc;

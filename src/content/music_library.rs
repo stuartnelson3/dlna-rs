@@ -691,8 +691,8 @@ fn normalize_artist_key(raw: &str) -> String {
 
 /// A tag-derived artist has no backing real `Index` container, so it
 /// needs its own id - a plain non-numeric string, which can never
-/// collide with a real `Index`-allocated id (always a plain integer
-/// string; see `IndexBuilder`'s `next_id`, `src/index.rs`).
+/// collide with a real `Index`-allocated id (always 16 hex digits, with
+/// no `:`; see `IndexBuilder`, `src/index.rs`).
 ///
 /// The key is percent-encoded so the id is pure ASCII. Real regression:
 /// a client re-encoded the UTF-8 bytes of "bārān" as Mac Roman text
@@ -779,7 +779,7 @@ mod tests {
     use super::*;
     use crate::index::{IndexBuilder, TrackTags};
     use crate::metadata::filename::FilenameMetadata;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     /// Builds a small tree:
     /// ```text
@@ -1145,7 +1145,7 @@ mod tests {
     #[test]
     fn guest_credits_without_an_album_artist_still_group_under_the_lead_artist() {
         let mut builder = IndexBuilder::new();
-        let music = builder.add_media_root("music".to_string());
+        let music = builder.add_media_root(Path::new("/music"), "music".to_string());
         let folder = builder.add_container(&music, "Band - Album".to_string());
         for (n, artist) in ["Band", "Band; Guest", "Band feat. Other"]
             .iter()
@@ -1168,7 +1168,7 @@ mod tests {
     #[test]
     fn different_lead_artists_still_count_as_a_compilation() {
         let mut builder = IndexBuilder::new();
-        let music = builder.add_media_root("music".to_string());
+        let music = builder.add_media_root(Path::new("/music"), "music".to_string());
         let folder = builder.add_container(&music, "Mix".to_string());
         for (n, artist) in ["One; Guest", "Two"].iter().enumerate() {
             tagged_item(
@@ -1191,7 +1191,7 @@ mod tests {
         // folder inside it, whose tracks disagree on artist, used to fall
         // back to "music" as its artist.
         let mut builder = IndexBuilder::new();
-        let music = builder.add_media_root("music".to_string());
+        let music = builder.add_media_root(Path::new("/music"), "music".to_string());
         let album = builder.add_container(&music, "Soundtrack".to_string());
         tagged_item(
             &mut builder,

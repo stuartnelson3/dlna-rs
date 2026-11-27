@@ -230,7 +230,8 @@ mod tests {
         let artists = composite.children(&folders_id).unwrap();
         assert_eq!(artists.len(), 1);
         let artist_id = artists[0].id().clone();
-        assert_eq!(artist_id.as_str(), "folders$1");
+        let local = artist_id.as_str().strip_prefix("folders$").unwrap();
+        assert_ne!(local, "0");
 
         let albums = composite.children(&artist_id).unwrap();
         let album_id = albums[0].id().clone();

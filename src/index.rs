@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -234,14 +234,18 @@ impl Index {
     }
 }
 
-/// Builds an [`Index`] one container/item at a time, assigning each a
-/// fresh ID and linking it into its parent's child list. This is where
+/// Builds an [`Index`] one container/item at a time, giving each an ID
+/// and linking it into its parent's child list.
+///
+/// An ID depends only on where an entry is: a media directory's full
+/// path, or an entry's parent ID and its file or folder name. A client
+/// keeps stream URLs, which hold IDs, so a rescan or a restart must give
+/// the same file the same ID. This is where
 /// the "never a dangling parent, never a duplicate ID" invariant actually
 /// gets enforced — every caller (right now, just `scanner`) goes through
 /// here rather than constructing `Index` by hand.
 pub struct IndexBuilder {
     index: Index,
-    next_id: u64,
 }
 
 impl IndexBuilder {
@@ -262,7 +266,6 @@ impl IndexBuilder {
                 nodes,
                 media_roots: HashSet::new(),
             },
-            next_id: 1,
         }
     }
 
@@ -271,15 +274,28 @@ impl IndexBuilder {
     /// (`scanner`, walking depth-first, should never be able to trigger
     /// this), not a condition to handle gracefully.
     pub fn add_container(&mut self, parent: &ObjectId, title: String) -> ObjectId {
-        self.insert(parent, title, |_| NodeKind::Container {
-            children: Vec::new(),
-        })
+        let key = child_key(parent, title.as_bytes());
+        self.insert(
+            parent,
+            &key,
+            title,
+            NodeKind::Container {
+                children: Vec::new(),
+            },
+        )
     }
 
     /// Adds the container for a configured media directory, directly
     /// under the root, and records that it is a media directory.
-    pub fn add_media_root(&mut self, title: String) -> ObjectId {
-        let id = self.add_container(&ObjectId::root(), title);
+    pub fn add_media_root(&mut self, path: &Path, title: String) -> ObjectId {
+        let id = self.insert(
+            &ObjectId::root(),
+            path.as_os_str().as_encoded_bytes(),
+            title,
+            NodeKind::Container {
+                children: Vec::new(),
+            },
+        );
         self.index.media_roots.insert(id.clone());
         id
     }
@@ -306,22 +322,25 @@ impl IndexBuilder {
         modified: SystemTime,
         tags: TrackTags,
     ) -> ObjectId {
-        self.insert(parent, title, |_| NodeKind::Item {
-            path,
-            size,
-            modified,
-            tags,
-        })
+        // The file name, not the title: the title drops the track number
+        // and the extension, so two files can share one.
+        let name = path.file_name().unwrap_or(path.as_os_str());
+        let key = child_key(parent, name.as_encoded_bytes());
+        self.insert(
+            parent,
+            &key,
+            title,
+            NodeKind::Item {
+                path,
+                size,
+                modified,
+                tags,
+            },
+        )
     }
 
-    fn insert(
-        &mut self,
-        parent: &ObjectId,
-        title: String,
-        kind: impl FnOnce(&ObjectId) -> NodeKind,
-    ) -> ObjectId {
-        let id = ObjectId(self.next_id.to_string());
-        self.next_id += 1;
+    fn insert(&mut self, parent: &ObjectId, key: &[u8], title: String, kind: NodeKind) -> ObjectId {
+        let id = self.unused_id(key);
 
         match self.index.nodes.get_mut(parent) {
             Some(Node {
@@ -339,9 +358,31 @@ impl IndexBuilder {
             Node {
                 parent_id: Some(parent.clone()),
                 title,
-                kind: kind(&id),
+                kind,
             },
         );
+        id
+    }
+
+    /// The ID for `key`. If another entry holds it, hashes the key again
+    /// with a counter, so no entry replaces another. This happens when
+    /// the config lists one media directory twice, or when two folder
+    /// names that are not UTF-8 convert to the same title. Only then does
+    /// an ID depend on the order of the walk.
+    fn unused_id(&self, key: &[u8]) -> ObjectId {
+        let mut id = hashed_id(key);
+        let mut attempt: u32 = 0;
+        while self.index.nodes.contains_key(&id) {
+            attempt += 1;
+            // No path holds a NUL byte, so this can't equal a real key.
+            id = hashed_id(&[key, b"\0", &attempt.to_le_bytes()].concat());
+        }
+        if attempt > 0 {
+            log::warn!(
+                "two entries share the ID key {:?}; gave the later one ID {id}",
+                String::from_utf8_lossy(key)
+            );
+        }
         id
     }
 
@@ -354,6 +395,26 @@ impl Default for IndexBuilder {
     fn default() -> Self {
         IndexBuilder::new()
     }
+}
+
+/// The key for an entry inside `parent`. A parent ID has no `/`, so the
+/// first `/` always ends it.
+fn child_key(parent: &ObjectId, name: &[u8]) -> Vec<u8> {
+    [parent.as_str().as_bytes(), b"/", name].concat()
+}
+
+/// 16 hex digits: pure ASCII, and free of the `$` that
+/// `CompositeContentSource` splits on.
+fn hashed_id(key: &[u8]) -> ObjectId {
+    ObjectId(format!("{:016x}", fnv1a_64(key)))
+}
+
+/// 64-bit FNV-1a. Written here because the output must never change
+/// between builds, and `std`'s `DefaultHasher` does not promise that.
+fn fnv1a_64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 /// A shared, swappable [`Index`] — cheap to clone (an `Arc` underneath),
@@ -373,9 +434,8 @@ impl SharedIndex {
 
     /// Replaces the whole index. A full rebuild-and-swap, not an
     /// incremental patch — matches "MVP: in-memory index, rebuilt on
-    /// scan," so there's no diffing logic to get subtly wrong. Object IDs
-    /// are reassigned each call as a result; see docs/DESIGN.md for why
-    /// that's an accepted MVP tradeoff.
+    /// scan," so there's no diffing logic to get subtly wrong. An unmoved
+    /// file keeps its ID across the swap; see [`IndexBuilder`].
     pub fn replace(&self, index: Index) {
         *self.0.write().expect("index lock poisoned") = index;
     }
@@ -511,6 +571,61 @@ mod tests {
         );
         let index = builder.build();
         assert!(index.children(&id).is_none());
+    }
+
+    #[test]
+    fn fnv1a_64_matches_the_published_test_vectors() {
+        assert_eq!(fnv1a_64(b""), 0xcbf2_9ce4_8422_2325);
+        assert_eq!(fnv1a_64(b"a"), 0xaf63_dc4c_8601_ec8c);
+        assert_eq!(fnv1a_64(b"foobar"), 0x8594_4171_f739_67e8);
+    }
+
+    /// Pinned values: a change to the key format or the hash breaks every
+    /// URL a client holds, so it must not happen by accident.
+    #[test]
+    fn ids_keep_the_same_value_between_builds() {
+        let mut builder = IndexBuilder::new();
+        let music = builder.add_media_root(Path::new("/music"), "music".to_string());
+        let artist = builder.add_container(&music, "Artist".to_string());
+
+        assert_eq!(music.as_str(), "75dc8a6a38687865");
+        assert_eq!(artist.as_str(), "7db80c17a89604bd");
+    }
+
+    #[test]
+    fn an_items_id_comes_from_its_file_name_not_its_title() {
+        let mut builder = IndexBuilder::new();
+        let [one, two] = ["01 - Intro.flac", "02 - Intro.flac"].map(|file| {
+            builder.add_item(
+                &ObjectId::root(),
+                "Intro".to_string(),
+                Path::new("/music").join(file),
+                1,
+                SystemTime::UNIX_EPOCH,
+            )
+        });
+
+        assert_eq!(one, hashed_id(b"0/01 - Intro.flac"));
+        assert_eq!(two, hashed_id(b"0/02 - Intro.flac"));
+    }
+
+    #[test]
+    fn a_media_directory_listed_twice_keeps_both_trees() {
+        let mut builder = IndexBuilder::new();
+        let ids = [(); 3].map(|()| {
+            let root = builder.add_media_root(Path::new("/music"), "music".to_string());
+            let album = builder.add_container(&root, "Album".to_string());
+            (root, album)
+        });
+        let index = builder.build();
+
+        assert_eq!(index.children(&ObjectId::root()).unwrap().len(), 3);
+        for (root, album) in &ids {
+            let children = index.children(root).unwrap();
+            assert_eq!(children.len(), 1);
+            assert_eq!(children[0].id(), album);
+        }
+        assert_eq!(index.len(), 7, "the root, three trees of two");
     }
 
     #[test]

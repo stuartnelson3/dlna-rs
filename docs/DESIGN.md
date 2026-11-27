@@ -223,6 +223,14 @@ with an empty index and starts serving immediately, and the rescan task
 answer right away rather than waiting on a first scan that could be slow
 for a large library.
 
+Object IDs are stable. A client keeps stream URLs, which hold IDs, so a
+rescan during playback must not move an ID to another file. A media
+directory's ID is a hash of its full path. Every other ID is a hash of
+the parent ID and the file or folder name. The hash is 64-bit FNV-1a,
+written in `index.rs`, because the result must not change between builds.
+The server stores no ID map. A rename or a move gives a new ID, and so
+does a change to a media directory's path in the config.
+
 Phase 8 adds the third extension-point trait, `MetadataProvider`
 (`core::metadata_provider`), narrower than the spec's own description of
 it. SPEC.md §10 lists title, artist, album, track, and genre as this
@@ -325,8 +333,8 @@ derived artist can span several real folders at once — a proper nested
 tree and a flat top-level album folder for the same artist, unified
 into one Artists entry — so it has no backing `Index` container of its
 own; `music_library.rs` hand-builds one with a synthetic id that can
-never collide with a real `Index`-allocated id (always a plain integer
-string).
+never collide with a real `Index`-allocated id (always 16 hex digits,
+with no `:`).
 
 Phase 15 adds `metadata::tag_cache::CachedTagMetadata`, a persistent
 on-disk cache in front of `TagMetadata`'s real `lofty` reads, backed by
