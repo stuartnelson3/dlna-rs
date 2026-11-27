@@ -176,7 +176,7 @@ impl HttpServer {
                     async move { server.handle(req).await }
                 });
                 if let Err(err) = http1::Builder::new().serve_connection(io, service).await {
-                    log::debug!("HTTP connection error: {err}");
+                    log::debug!("HTTP connection error: {}", with_causes(&err));
                 }
             });
         }
@@ -431,6 +431,16 @@ fn range_not_satisfiable(file_size: u64) -> Response<RespBody> {
 }
 
 /// Arguments in a stable order, so log lines are greppable and diffable.
+/// `err` and each cause under it, joined with ": ". `hyper` names only
+/// the kind of failure in its own text ("connection error"); the reason,
+/// such as a broken pipe, is in the cause.
+fn with_causes(err: &dyn std::error::Error) -> String {
+    std::iter::successors(Some(err), |err| err.source())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(": ")
+}
+
 fn sorted_args(arguments: &std::collections::HashMap<String, String>) -> Vec<(&str, &str)> {
     let mut args: Vec<(&str, &str)> = arguments
         .iter()
@@ -494,6 +504,30 @@ fn empty_response(status: StatusCode) -> Response<RespBody> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An error shaped like `hyper`'s: its text leaves out the cause.
+    #[derive(Debug)]
+    struct Wrapper(io::Error);
+
+    impl std::fmt::Display for Wrapper {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("connection error")
+        }
+    }
+
+    impl std::error::Error for Wrapper {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    #[test]
+    fn with_causes_adds_each_cause_to_the_error_text() {
+        let err = Wrapper(io::Error::other("Broken pipe"));
+
+        assert_eq!(with_causes(&err), "connection error: Broken pipe");
+        assert_eq!(with_causes(&io::Error::other("alone")), "alone");
+    }
 
     fn block_on<F: std::future::Future>(fut: F) -> F::Output {
         tokio::runtime::Runtime::new().unwrap().block_on(fut)
