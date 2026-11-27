@@ -96,7 +96,8 @@ restart the service.
 ## Docs
 
 - [`docs/PLAN.md`](docs/PLAN.md): the phased implementation plan.
-- `docs/DESIGN.md` and `docs/THREAT_MODEL.md`: added in Phase 0, and kept
+- [`docs/DESIGN.md`](docs/DESIGN.md) and
+  [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md): added in Phase 0, and kept
   up to date as the design evolves.
 
 ## License
