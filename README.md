@@ -24,8 +24,8 @@ this repo tracks instead of GitHub issues.
 - Discovery over SSDP, a ContentDirectory service, and HTTP file serving
   with Range support. That is enough for TVs, Sonos-class speakers, VLC,
   and BubbleUPnP to find and play files.
-- Rescans the media directory on a timer, so new files show up without a
-  restart.
+- Rescans the media directory on a timer or on `SIGHUP`, so new files
+  show up without a restart.
 - Real Albums, Artists, and Recently Added views, computed live off the
   index instead of a stale cache, with configurable counts. An artist's
   albums merge into one Artists entry when their tags agree, even when
@@ -88,6 +88,10 @@ Run any of them with `cargo run --example <name>`.
 
 To run as a real service, see [`systemd/dlna-rs.service`](systemd/dlna-rs.service).
 Its own comments cover installing it and the tradeoffs it makes.
+
+To rescan now, run `systemctl reload dlna-rs`, or send the process
+`SIGHUP`. A rescan does not read the config again. After a config change,
+restart the service.
 
 ## Docs
 

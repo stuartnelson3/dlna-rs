@@ -1,5 +1,5 @@
-//! The rescan timer: re-walks the configured media directories on a
-//! schedule and replaces the shared index in place, so new/removed files
+//! The rescan loop: re-walks the configured media directories, on a
+//! timer or on request, and replaces the shared index in place, so new/removed files
 //! show up without a restart. A full rescan rebuilds the whole `Index`
 //! from scratch and swaps it in wholesale (`SharedIndex::replace`) rather
 //! than incrementally patching the old one — simpler, and matches "MVP:
@@ -10,6 +10,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+
+use tokio::sync::Notify;
 
 use crate::config::{MediaConfig, TagCacheConfig};
 use crate::core::metadata_provider::MetadataProvider;
@@ -51,7 +53,15 @@ pub fn build_tags(
 }
 
 /// Runs forever: scans once immediately if `on_startup`, then re-scans
-/// every `interval`. Each scan runs on a blocking thread — directory
+/// when `interval` passes or `requested` is notified, whichever is first.
+/// The interval starts again after every scan.
+///
+/// Scans never overlap. `Notify::notify_one` keeps one request until the
+/// loop waits for it, so any number of requests during a scan give one
+/// more scan after it. That scan sees files that arrived too late for the
+/// scan in progress.
+///
+/// Each scan runs on a blocking thread — directory
 /// walking is real filesystem I/O, and a large library shouldn't stall
 /// the async runtime while it's being walked. `tags` is decided once by
 /// the caller (a plain `TagMetadata`, or a `CachedTagMetadata` wrapping
@@ -64,12 +74,16 @@ pub async fn run(
     interval: Duration,
     on_startup: bool,
     tags: Arc<dyn MetadataProvider>,
+    requested: Arc<Notify>,
 ) {
     if on_startup {
         rescan_once(&media, &index, &tags).await;
     }
     loop {
-        tokio::time::sleep(interval).await;
+        tokio::select! {
+            () = tokio::time::sleep(interval) => {}
+            () = requested.notified() => {}
+        }
         rescan_once(&media, &index, &tags).await;
     }
 }
@@ -152,6 +166,7 @@ mod tests {
             Duration::from_secs(3600),
             true,
             tags,
+            Arc::default(),
         ));
 
         // Give the spawned task a moment to run its first (on_startup)
@@ -227,12 +242,59 @@ mod tests {
             Duration::from_secs(3600),
             false,
             tags,
+            Arc::default(),
         ));
 
         tokio::time::sleep(Duration::from_millis(50)).await;
         // Still the original empty index - the (long) interval hasn't
         // elapsed, and on_startup=false means no immediate scan either.
         assert_eq!(shared.children(&ObjectId::root()).unwrap(), Vec::new());
+
+        handle.abort();
+    }
+
+    /// The number of files in the one media directory, once a scan puts
+    /// `expected` of them there. Gives up after five seconds.
+    async fn wait_for_file_count(index: &SharedIndex, expected: usize) -> usize {
+        let count = || {
+            let roots = index.children(&ObjectId::root()).unwrap();
+            roots
+                .first()
+                .map_or(0, |root| index.children(root.id()).unwrap().len())
+        };
+        let _ = tokio::time::timeout(Duration::from_secs(5), async {
+            while count() != expected {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        count()
+    }
+
+    #[tokio::test]
+    async fn run_scans_on_each_request_without_waiting_for_the_interval() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("one.mp3"), b"x").unwrap();
+        let media = media_config(dir.path());
+        let shared = SharedIndex::new(IndexBuilder::new().build());
+        let tags: Arc<dyn MetadataProvider> = Arc::new(FilenameMetadata);
+        let requested = Arc::new(Notify::new());
+
+        // A request made before the loop waits for it is kept.
+        requested.notify_one();
+        let handle = tokio::spawn(run(
+            media,
+            shared.clone(),
+            Duration::from_secs(3600),
+            false,
+            tags,
+            Arc::clone(&requested),
+        ));
+        assert_eq!(wait_for_file_count(&shared, 1).await, 1);
+
+        std::fs::write(dir.path().join("two.mp3"), b"x").unwrap();
+        requested.notify_one();
+        assert_eq!(wait_for_file_count(&shared, 2).await, 2);
 
         handle.abort();
     }

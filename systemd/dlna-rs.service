@@ -23,6 +23,10 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/dlna-rs --config /etc/dlna-rs/dlna-rs.toml
+# `systemctl reload dlna-rs` rescans the media directories while the
+# server keeps running. It returns before the scan ends, and it does not
+# read the config again.
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
 

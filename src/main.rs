@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use dlna_rs::config::Config;
 use dlna_rs::content::composite::CompositeContentSource;
@@ -12,6 +13,7 @@ use dlna_rs::index::{IndexBuilder, SharedIndex};
 use dlna_rs::metadata::tags::TagMetadata;
 use dlna_rs::rescan;
 use dlna_rs::transform::passthrough::PassthroughSource;
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 struct Args {
@@ -82,6 +84,23 @@ fn resolve_uuid(configured: &str) -> Uuid {
     }
 }
 
+/// Turns each SIGHUP into a rescan request. The handler is in place when
+/// this returns: without it, SIGHUP ends the process.
+fn rescan_on_sighup() -> Arc<Notify> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut sighup = signal(SignalKind::hangup()).expect("failed to install SIGHUP handler");
+    let requested = Arc::new(Notify::new());
+    let sender = Arc::clone(&requested);
+    tokio::spawn(async move {
+        while sighup.recv().await.is_some() {
+            log::info!("received SIGHUP, rescan requested");
+            sender.notify_one();
+        }
+    });
+    requested
+}
+
 async fn wait_for_shutdown() {
     use tokio::signal::unix::{SignalKind, signal};
 
@@ -122,6 +141,8 @@ async fn main() -> ExitCode {
     };
 
     init_logging(&config.logging);
+    // Early, so a SIGHUP during startup requests a rescan.
+    let rescan_requested = rescan_on_sighup();
     log::info!("loaded config from {}", args.config_path.display());
     log::debug!("{config:#?}");
 
@@ -201,6 +222,7 @@ async fn main() -> ExitCode {
         config.rescan.interval,
         config.rescan.on_startup,
         scan_tags,
+        rescan_requested,
     ));
 
     wait_for_shutdown().await;

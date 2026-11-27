@@ -452,6 +452,7 @@ async fn start_server_with_rescan(
         interval,
         false,
         scan_tags,
+        Default::default(),
     ));
     (format!("http://{addr}"), dir, http_handle, rescan_handle)
 }

@@ -223,6 +223,12 @@ with an empty index and starts serving immediately, and the rescan task
 answer right away rather than waiting on a first scan that could be slow
 for a large library.
 
+`SIGHUP` also starts a rescan. `main.rs` turns the signal into a
+`tokio::sync::Notify`, so the loop waits for the timer or a request and
+knows nothing about signals. This covers media on NFS, where inotify does
+not report changes that another machine makes. Requests during a scan
+give one more scan after it. The config is not read again.
+
 Object IDs are stable. A client keeps stream URLs, which hold IDs, so a
 rescan during playback must not move an ID to another file. A media
 directory's ID is a hash of its full path. Every other ID is a hash of
